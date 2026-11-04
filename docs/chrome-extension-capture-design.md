@@ -9,6 +9,12 @@ directly into one of the four EisenQ quadrants.
 > **"Connect to EisenQ"** handoff (§4.4): the extension opens a Clerk-protected consent page on
 > the app, which hands the token over directly. Tokens are now an array so multiple browsers can
 > be connected and revoked independently. Phase 1 grows by ~0.5 d; v1 is now 4–5.5 d.
+>
+> **Rev 3 (2026-11-04)** — Rev 1 and 2 were written against a tree 106 commits behind `main`.
+> Re-validated against current `main`. The important correction: **middleware is now
+> deny-by-default**, which *inverts* the original Pitfall 1 — `/api/capture` must be added to
+> `isPublicRoute` or it never reaches its own token check. Line references and the `Task` model
+> are refreshed below; `archivedAt` joins `parentTaskId` as a null-convention field.
 
 ---
 
@@ -18,10 +24,10 @@ directly into one of the four EisenQ quadrants.
 |---|---|
 | Framework | Next.js 15.5.7, App Router, React 19, Turbopack dev |
 | Auth | Clerk v6 (`@clerk/nextjs`), **cookie sessions** |
-| Route protection | `src/middleware.ts` — `auth.protect()` on `/dashboard` and `/api/tasks(.*)` |
+| Route protection | `src/middleware.ts` — **deny-by-default**: everything is private unless listed in `isPublicRoute`. API routes answer 401; pages redirect to sign-in |
 | Data | MongoDB official driver, no ORM (`src/server/db/index.ts`) |
 | Collections | `tasks`, `checklistItems`, `maintenanceItems`, `userSettings` |
-| UI | `src/app/dashboard/page.tsx` — a single **5,158-line** client component |
+| UI | `src/app/dashboard/page.tsx` — a single **6,810-line** client component |
 | Validation | Zod schemas inline per route |
 | Hosting | Vercel (serverless; `@vercel/analytics` present) |
 
@@ -42,7 +48,12 @@ interface Task {
   createdAt: Date;
   updatedAt: Date;
   userId?: string;               // Clerk user id
-  parentTaskId?: ObjectId;       // set ⇒ this is a subtask
+  parentTaskId?: ObjectId;       // set ⇒ this is a subtask, and it leaves the matrix
+  linkedParentId?: ObjectId;     // soft link: stays top-level but also shows under a parent
+  goalId?: ObjectId;             // optional link to a weekly/monthly goal
+  sortOrder?: number;            // manual position within its quadrant
+  archivedAt?: Date;             // set ⇒ drops out of the matrix (see Pitfall 7)
+  checklists?: TaskChecklist[];  // copied in from Myndlist; never surface as tasks
 }
 ```
 
@@ -324,26 +335,36 @@ entirely — there's no secret-dependent branch, and a wrong token is simply a m
 
 ### 4.3 Middleware change
 
-Two things, in opposite directions:
+Middleware is **deny-by-default**: every route the matcher reaches is private unless it appears
+in `isPublicRoute`. That flips the original advice in this document.
 
 ```ts
-const isProtectedRoute = createRouteMatcher([
-  '/dashboard',
-  '/api/tasks(.*)',
-  '/connect-extension',        // ADD — this is what produces the sign-in step
-  '/api/capture/connect(.*)',  // ADD — minting must be Clerk-authed
+const isPublicRoute = createRouteMatcher([
+  "/",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/api/contact",
+  "/api/capture",          // ADD — token-authenticated, must bypass Clerk
+  "/api/capture/suggest",  // ADD — same
 ]);
-// /api/capture and /api/capture/suggest stay OUT — they authenticate by token
+// /capture and /connect-extension need NO entry: being private is exactly what
+// gives a signed-out user the sign-in screen and returns them afterwards.
 ```
 
-Adding `/connect-extension` is what makes the whole UX work: an unauthenticated user clicking
-Connect gets Clerk's sign-in screen and is returned to the consent page afterwards. Without it
-they'd get a blank page.
+Two consequences, and they pull in opposite directions:
 
-And `/api/capture` must **not** match `/api/tasks(.*)`, or `auth.protect()` rejects it before the
-handler runs. Naming it `/api/capture` (a sibling, not a child of `/api/tasks`) is deliberate —
-exactly the kind of thing that breaks if someone later "tidies up" the route under
-`/api/tasks/capture`. Add a comment there.
+1. **The pages want protection, and get it for free.** `/capture` and `/connect-extension` are
+   private by default, which is precisely the behaviour the connect flow depends on. Verified:
+   `/capture?title=…` redirects to `/sign-in?redirect_url=…` with **every query parameter
+   preserved**, so the user lands back on a pre-filled form.
+2. **The token routes must be made public, or they are unreachable.** Under deny-by-default the
+   middleware answers `401` for `/api/capture` *before* the handler can look at
+   `X-Capture-Token`. Forgetting this produces an endpoint that rejects a perfectly valid token
+   with no log line in your own code.
+
+"Public" here means only "middleware does not check Clerk" — the route still authenticates, by
+token, in its own handler. Leave a comment saying so, because a route listed under a matcher
+named `isPublicRoute` looks alarming at a glance.
 
 ### 4.4 The connect handoff
 
@@ -558,10 +579,11 @@ can actually follow, and it removes a plaintext credential from the clipboard.
 
 Ordered by how likely they are to actually bite.
 
-**1. Clerk middleware will reject a mis-named capture route.**
-`auth.protect()` matches `/api/tasks(.*)`. A route at `/api/tasks/capture` returns 401/404 before
-your token logic ever runs — and the failure looks like a bug in the extension, not the route
-name. Keep `/api/capture` a sibling.
+**1. Deny-by-default middleware will reject the capture route however you name it.**
+Every route is private unless listed in `isPublicRoute`, so `/api/capture` returns 401 before
+your token logic ever runs — and the failure looks like a bug in the extension, not the
+middleware. Add both capture routes to `isPublicRoute` (§4.3). Renaming them doesn't help; this
+is not the older "don't nest under `/api/tasks`" trap, it applies to every path you could pick.
 
 **2. There is no CORS anywhere in the app today, and MV3 enforces it.**
 MV2 background pages were exempt from CORS; MV3 service workers are **not**. Without an `OPTIONS`
@@ -577,24 +599,29 @@ extension code.
 **4. Captured tasks won't appear in an open dashboard.**
 `fetchTasks()` runs on mount with no polling, no websocket, no revalidation. You'll capture
 something, look at the dashboard, and conclude the API failed. Fix the refetch in the same PR as
-the capture endpoint, not later.
+the capture endpoint, not later. The pattern is already in the file — `page.tsx:1401` refreshes
+*calendar* events on window focus — so this is a copy of nine existing lines, not a design
+question.
 
-**5. `TaskQuadrant` is already defined twice; the extension would make three.**
-`src/server/db/schema.ts:3` and `src/app/dashboard/page.tsx:89` each declare it independently.
-Extract a shared `src/lib/task-types.ts` first and have the extension's types generated from or
-mirrored against it — otherwise a future fifth quadrant or renamed enum silently diverges across
-three files.
+**5. `TaskQuadrant` is defined twice already; don't let the extension make it three.**
+`src/server/db/schema.ts:3` and `src/app/dashboard/page.tsx:91` each declare it independently.
+The capture page sidesteps this with `import type { TaskQuadrant } from "~/server/db/schema"` —
+erased at compile time, so no server code reaches the client bundle — but the real fix is to
+extract a shared `src/lib/task-types.ts` and have both the dashboard and the extension mirror
+it. Otherwise a renamed quadrant silently diverges across files.
 
 **6. The `urgent-important ⇒ priority: high` rule lives only in the UI.**
-It's applied at `page.tsx:1472` and `page.tsx:1507`, not in `POST /api/tasks`. A capture that
-bypasses the dashboard produces tasks that violate an invariant the rest of the app assumes.
-Either replicate it in `/api/capture` (shown above) or, better, move it server-side into both
-routes.
+It's applied at `page.tsx:2266`, `:2302`, `:2364` and `:3071` — four copies now — and nowhere in
+`POST /api/tasks`. A capture that bypasses the dashboard produces tasks that violate an
+invariant the rest of the app assumes. Replicate it in `/api/capture` (shown above) or, better,
+move it server-side into both routes; four copies is itself the argument for the latter.
 
-**7. The `parentTaskId: null` convention is load-bearing.**
-`GET /api/tasks` filters on `parentTaskId: null`, which in MongoDB matches *null or missing*. A
-captured task that sets `parentTaskId` to anything else disappears from the dashboard entirely
-while sitting happily in the database. Don't set the field.
+**7. Two null-convention fields are load-bearing, not one.**
+`GET /api/tasks` filters on **both** `parentTaskId: null` *and* `archivedAt: null`, each of which
+in MongoDB matches *null or missing*. A captured task that sets either to anything else
+disappears from the dashboard entirely while sitting happily in the database. Don't set either
+field — and re-check this list when new matrix-filtering fields land, because it has already
+grown once.
 
 **8. `dueDate` must be a full ISO datetime.**
 The Zod schema is `z.string().datetime()` — `"2026-10-31"` fails validation. If the extension
@@ -675,8 +702,9 @@ user sees a success checkmark and nothing new in the quadrant. Only a genuinely 
   change behind the same button, not a change the user sees.
 - **Freshness:** refetch-on-focus is the right fix at one user. At "shared with a partner," this
   wants SSE or polling with an `updatedAt` cursor.
-- **The 5,158-line dashboard:** this feature adds a source chip, a token panel, and a refetch
-  hook to a file that's already unmaintainable. Splitting out `TaskCard`, `SettingsDialog`, and
-  the data-fetching hooks is a prerequisite for comfortable work here, not a nice-to-have.
+- **The 6,810-line dashboard:** this feature adds a source chip, a token panel, and a refetch
+  hook to a file that's already unmaintainable — and which grew by ~1,650 lines in the 106
+  commits this document was first written against. Splitting out `TaskCard`, `SettingsDialog`,
+  and the data-fetching hooks is a prerequisite for comfortable work here, not a nice-to-have.
 - **Capture backlog:** if captures regularly land unsorted, an "Inbox" pseudo-quadrant with a
   triage view beats forcing a quadrant choice at capture time.

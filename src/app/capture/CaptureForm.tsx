@@ -5,12 +5,10 @@ import { useSearchParams } from "next/navigation";
 import { addDays, endOfDay, format } from "date-fns";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 import { cn } from "~/lib/utils";
-
-type TaskQuadrant =
-  | "urgent-important"
-  | "important-not-urgent"
-  | "urgent-not-important"
-  | "not-urgent-not-important";
+// Imported rather than redeclared: the dashboard already keeps its own copy of this
+// union (page.tsx:91), and a third would be one too many. `import type` is erased at
+// compile time, so nothing from the server schema reaches the client bundle.
+import type { TaskQuadrant } from "~/server/db/schema";
 
 const QUADRANTS: {
   key: TaskQuadrant;
