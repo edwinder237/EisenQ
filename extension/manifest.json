@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "EisenQ Capture (Phase 0)",
+  "version": "0.1.0",
+  "description": "Capture the page you're on, or the text you've selected, into an EisenQ quadrant.",
+  "permissions": ["activeTab", "scripting", "contextMenus", "storage"],
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_title": "Add to EisenQ"
+  },
+  "options_page": "options.html",
+  "commands": {
+    "capture": {
+      "suggested_key": {
+        "default": "Alt+Shift+E",
+        "mac": "Alt+Shift+E"
+      },
+      "description": "Add the current page to EisenQ"
+    }
+  }
+}
