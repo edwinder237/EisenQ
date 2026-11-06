@@ -458,12 +458,17 @@ Pin to the one extension ID via a new `EXTENSION_ID` env var; don't use `*`.
 db.tasks.createIndex({ userId: 1, parentTaskId: 1, createdAt: -1 })     // the main GET
 db.tasks.createIndex({ userId: 1, "source.externalId": 1 },
                      { sparse: true })                                   // dedupe lookup
-db.userSettings.createIndex({ "captureTokens.hash": 1 },
-                            { unique: true, sparse: true })              // token auth (multikey)
+db.userSettings.createIndex({ "captureTokens.hash": 1 })                // token auth (multikey)
 ```
 
-The third one is load-bearing: token auth does a lookup on every capture. `unique` across a
-multikey index also guarantees no two users can ever hold the same token.
+The third one is load-bearing: token auth does a lookup on every capture.
+
+> **Corrected in Phase 1.** An earlier revision made this index `{ unique: true, sparse: true }`.
+> That is a bug: `sparse` still indexes a document whose array exists but is empty, so the
+> second user to disconnect their last browser hits a duplicate-key error on
+> `captureTokens: []`. Uniqueness bought nothing — 256-bit tokens don't collide — so the index is
+> plain. As built, the capture indexes are created lazily by `src/server/capture-token.ts`, and
+> the dedupe index uses a `partialFilterExpression` on `source.externalId` rather than `sparse`.
 
 ### 4.7 Extension (Manifest V3)
 

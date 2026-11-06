@@ -15,23 +15,52 @@
         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .wrap {
-        max-width: 420px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+        max-width: 440px;
+      }
+      section {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
       }
       h1 {
-        margin: 0 0 4px;
+        margin: 0;
         font-size: 16px;
       }
-      p {
-        margin: 0 0 16px;
-        color: #9ca3af;
-        font-size: 13px;
-      }
-      label {
-        display: block;
-        margin-bottom: 6px;
+      h2 {
+        margin: 0;
         color: #9ca3af;
         font-size: 12px;
         font-weight: 500;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      p {
+        margin: 0;
+        color: #9ca3af;
+        font-size: 13px;
+      }
+      .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border: 1px solid #1f2937;
+        border-radius: 8px;
+        background: #111827;
+        font-size: 13px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        flex-shrink: 0;
+        border-radius: 50%;
+        background: #6b7280;
+      }
+      .dot.on {
+        background: #22c55e;
       }
       input {
         width: 100%;
@@ -41,15 +70,19 @@
         border-radius: 8px;
         background: #111827;
         color: #fff;
-        font-size: 14px;
+        font-size: 13px;
       }
       input:focus {
         border-color: #4b5563;
         outline: none;
       }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
       button {
-        margin-top: 12px;
-        padding: 8px 16px;
+        padding: 8px 14px;
         border: 0;
         border-radius: 8px;
         background: #fff;
@@ -58,23 +91,66 @@
         font-weight: 600;
         cursor: pointer;
       }
-      .status {
-        margin-left: 10px;
-        color: #4ade80;
+      button.secondary {
+        border: 1px solid #374151;
+        background: transparent;
+        color: #e5e7eb;
+        font-weight: 500;
+      }
+      .msg {
         font-size: 13px;
+      }
+      details summary {
+        color: #9ca3af;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      details[open] summary {
+        margin-bottom: 8px;
       }
     </style>
   </head>
   <body>
     <div class="wrap">
       <h1>EisenQ Capture</h1>
-      <p>Where your EisenQ app is running.</p>
-      <label for="origin">App origin</label>
-      <input id="origin" type="url" placeholder="http://localhost:3000" />
-      <div>
-        <button id="save">Save</button>
-        <span id="status" class="status"></span>
-      </div>
+
+      <section>
+        <h2>Connection</h2>
+        <div class="status">
+          <span id="dot" class="dot"></span>
+          <span id="status-text">Checking…</span>
+        </div>
+        <div class="row">
+          <button id="connect">Connect to EisenQ</button>
+          <button id="disconnect" class="secondary" hidden>Disconnect</button>
+        </div>
+        <p id="disconnect-note" hidden>Disconnecting forgets the connection in this browser only.</p>
+      </section>
+
+      <section>
+        <h2>App</h2>
+        <p>Where EisenQ is running. Connecting sets this for you.</p>
+        <input id="origin" type="url" placeholder="https://eisenq-lumevetech.vercel.app" />
+        <div class="row">
+          <button id="save-origin" class="secondary">Save</button>
+          <span id="origin-msg" class="msg"></span>
+        </div>
+      </section>
+
+      <section>
+        <details>
+          <summary>Connect with a code instead</summary>
+          <p style="margin-bottom: 8px">
+            Only needed if the Connect button doesn't work. EisenQ's connect page shows a code you can
+            paste here.
+          </p>
+          <input id="code" type="text" placeholder="eqc_…" autocomplete="off" spellcheck="false" />
+          <div class="row" style="margin-top: 8px">
+            <button id="save-code" class="secondary">Use code</button>
+            <span id="code-msg" class="msg"></span>
+          </div>
+        </details>
+      </section>
     </div>
     <script src="options.js"></script>
   </body>
