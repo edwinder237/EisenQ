@@ -4,6 +4,22 @@ export type TaskQuadrant = "urgent-important" | "important-not-urgent" | "urgent
 export type TaskPriority = "high" | "medium" | "low";
 export type TaskStatus = "pending" | "in-progress" | "completed";
 
+// Where a task came from, when it was filed by the browser capture extension
+// rather than typed into the app. Absent on hand-made tasks.
+export type TaskSourceKind = "gmail" | "page" | "selection";
+
+export interface TaskSource {
+  kind: TaskSourceKind;
+  url: string;              // thread permalink or page URL; the link back
+  title?: string;           // page title or email subject, as captured
+  from?: string;            // sender, when the capture knew one
+  // A per-item id such as a Gmail thread id. The ONLY safe dedupe key: a page
+  // URL is not one, because an offers page or a newsletter holds many separately
+  // actionable items that all share it.
+  externalId?: string;
+  capturedAt: Date;
+}
+
 // A reusable checklist ("Photography gig") is authored in Myndlist and COPIED
 // into a task on attach. These embedded types are the copy: independent of the
 // Myndlist original from that moment on, so a checklist you ran last month still
@@ -51,6 +67,7 @@ export interface Task {
   sortOrder?: number;       // Manual position within its quadrant; lower = higher up (top = Next action)
   archivedAt?: Date;        // Set when archived; archived tasks drop out of the matrix
   checklists?: TaskChecklist[]; // Reusable checklists copied in from Myndlist; never surface as tasks
+  source?: TaskSource;      // Set only by the browser capture extension
 }
 
 export type GoalPeriodType = "week" | "month" | "year" | "custom";
@@ -114,8 +131,18 @@ export interface UserSettings {
   // Myndlist has no field for the completion gate, so it is kept here,
   // keyed by Myndlist checklist id. Not a secret, so not encrypted.
   checklistGates?: Record<string, boolean>;
+  // One entry per browser connected through /connect-extension. An array so that
+  // connecting a second browser doesn't silently disconnect the first.
+  captureTokens?: CaptureToken[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface CaptureToken {
+  hash: string;             // SHA-256 hex of the token; the token itself is never stored
+  label: string;            // "Chrome on macOS", from the user agent at connect time
+  createdAt: Date;
+  lastUsedAt?: Date;
 }
 
 export const collections = {

@@ -1,52 +1,80 @@
-# EisenQ Capture — Phase 0
+# EisenQ Capture
 
-A deliberately minimal Chrome extension that files the page you're on into an EisenQ quadrant.
+A Chrome extension that files the page you're on, or the text you've selected, into an EisenQ
+quadrant. Personal use: it's loaded unpacked and never published to the Web Store.
 
-This is the **Phase 0 spike** from [`docs/chrome-extension-capture-design.md`](../docs/chrome-extension-capture-design.md):
-the window hand-off approach. There is no API token, no CORS, and no Clerk extension SDK — the
-extension just opens the app's own `/capture` page in a small window, where your normal signed-in
-session does the work.
+Design and roadmap: [`docs/chrome-extension-capture-design.md`](../docs/chrome-extension-capture-design.md).
 
 ## Install
 
-1. `pnpm dev` in the project root (the extension defaults to `http://localhost:3000`).
-2. Open `chrome://extensions`.
-3. Turn on **Developer mode** (top right).
-4. Click **Load unpacked** and select this `extension/` folder.
-5. If your app runs anywhere else, right-click the extension → **Options** and set the origin.
+1. Open `chrome://extensions` and turn on **Developer mode** (top right).
+2. Click **Load unpacked** and select this `extension/` folder.
+3. **Check the ID** on the extension's card. It must be:
 
-> The extension ID will change if you remove and re-add it. That's fine at Phase 0 — nothing
-> depends on the ID yet. Phase 2 pins it with a `key` in the manifest, and from then on it
-> matters.
+   ```
+   kfchhokbhfkeimjnaifkhdahndkmfgjm
+   ```
+
+   It's fixed by the `key` in `manifest.json` and hardcoded in `src/lib/extension.ts`. If they
+   ever differ, connecting does nothing and every one-click capture is refused — **with no error
+   message anywhere**. That's the failure to rule out first.
+
+## Connect (once per browser)
+
+Right-click the extension icon → **Options** → **Connect to EisenQ**. A tab opens on the app;
+sign in if asked, confirm the account, click **Connect this browser**, and the tab closes itself.
+The options page then shows **Connected**.
+
+Connecting points the extension at whichever app you connected from, so connecting from
+`localhost` and from the deployed app both just work.
+
+If the button reports that the extension isn't responding, use **Connect manually with a code
+instead** on that page and paste the code into the options page under *Connect with a code
+instead*.
+
+### Testing before this is deployed
+
+The deployed app only gains `/connect-extension` and `/api/capture` once this branch is merged
+and Vercel redeploys. Until then, test against your local server:
+
+1. `pnpm dev` in the project root.
+2. In the extension's **Options**, set **App** to `http://localhost:3000` and save.
+3. Connect as above.
+
+The deployed app at `eisenq-lumevetech.vercel.app` also needs **Vercel Authentication turned off
+for Production** (Vercel → project → Settings → Deployment Protection). While it's on, every
+request from the extension gets a Vercel login page instead of the app.
 
 ## Use
 
-Three ways in, all of which do the same thing:
+| How | What happens |
+|---|---|
+| Right-click → **Add to EisenQ ▸ Do First** (or any quadrant) | Filed in one click, no window. The icon flashes **✓** |
+| Right-click → **Add to EisenQ ▸ Open full form…** | Opens the form with deadline chips |
+| Click the icon, or **Alt+Shift+E** | Opens the form |
 
-- Click the extension icon
-- Press **Alt+Shift+E**
-- Right-click a page or a text selection → **Add to EisenQ**
+**What becomes the title:** a selection under 120 characters becomes the title — select one offer
+on a page of them and that's what you get. Longer selections become the notes, with the page title
+as the title. **On Gmail**, an open thread's subject becomes the title, and capturing the same
+thread twice doesn't create a duplicate.
 
-A small window opens with the title, URL and any selected text already filled in. Set a deadline
-if it needs one, click a quadrant, and it closes itself.
+**If something goes wrong:** the icon flashes **!** and the full form opens with everything you
+selected, so a failed capture never loses anything. If the connection was revoked, the connect
+page opens instead.
 
-**Selection behaviour:** if you've selected fewer than 120 characters, that text becomes the
-*title* — which is what you want when grabbing one offer off a page full of them. Longer
-selections become the *notes* and the page title is used instead.
-
-## What Phase 0 doesn't do
-
-These are deliberate omissions, not bugs. Each is scheduled later in the design doc.
+## Not yet
 
 | Missing | Arrives in |
 |---|---|
-| In-place popup (this opens a window, with a visible flash) | Phase 2 |
-| `source` field on the task — the URL currently goes in the description | Phase 1 |
-| Source chip and link-back in the dashboard | Phase 5 |
-| Gmail subject/sender extraction | Phase 3 |
-| Offline queue and retry | Phase 3 |
-| AI quadrant and expiry suggestion | Phase 4 |
-| Captures appearing without a dashboard refresh | Phase 5 |
+| In-place popup with deadline chips (one-click capture has no deadline yet) | Phase 2 |
+| Gmail sender, read from the page | Phase 3 |
+| Offline queue — today a failure falls back to the form instead | Phase 3 |
+| AI quadrant and deadline suggestion | Phase 4 |
+| Source chip in the dashboard, list of connected browsers in Settings | Phase 5 |
+| Captures appearing without reloading the dashboard | Phase 5 |
 
-The last one is worth knowing while you're testing: if the dashboard is already open in another
-tab, a new capture won't show up there until you reload it.
+## About the key
+
+`manifest.json` holds only the **public** key, which is all an unpacked extension needs to keep its
+ID. The matching private key is only needed to pack a `.crx`, which a personal, unpacked
+extension never does — so it isn't in the repository.
