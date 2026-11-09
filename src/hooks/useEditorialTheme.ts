@@ -21,11 +21,17 @@ export function useEditorialTheme() {
     }
     const dark =
       stored !== null ? stored === "true" : window.matchMedia("(prefers-color-scheme: dark)").matches;
-    document.documentElement.classList.toggle("dark", dark);
+    const html = document.documentElement;
+    html.classList.toggle("dark", dark);
+    // Tells the browser the page already handles its own theme. Without it,
+    // Chrome's automatic dark mode repaints the page (light cards, invisible
+    // text), and native controls like the date picker ignore the theme.
+    html.style.colorScheme = dark ? "dark" : "light";
 
     return () => {
       body.classList.remove("paper");
       body.classList.add("bg-gray-950", "text-white");
+      html.style.colorScheme = "";
     };
   }, []);
 }
