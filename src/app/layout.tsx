@@ -6,12 +6,26 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { Analytics } from "@vercel/analytics/react";
 
 export const metadata: Metadata = {
+  // Needed for absolute og:image URLs — link unfurlers cannot resolve a
+  // relative one, so without this the preview card has no image.
+  metadataBase: new URL("https://www.eisenq.app"),
   title: "EisenQ - Decide & Do",
   description: "The Prioritization Engine. Decide what truly matters.",
-  // Declared explicitly rather than left to the app/apple-icon.png convention,
-  // which emits the href with a cache-busting query string. iOS Safari is
-  // unreliable about fetching an apple-touch-icon whose URL carries a query,
-  // and quietly falls back to a generated letter tile when it can't.
+  openGraph: {
+    type: "website",
+    siteName: "EisenQ",
+    title: "EisenQ - Decide & Do",
+    description: "The Prioritization Engine. Decide what truly matters.",
+    url: "/",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "EisenQ - Decide & Do",
+    description: "The Prioritization Engine. Decide what truly matters.",
+  },
+  // Declared explicitly rather than left to the file conventions, so each href
+  // is a bare path. Next appends a cache-busting query to convention-generated
+  // icon URLs, and a plain path is one less thing for a fetcher to mishandle.
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },
