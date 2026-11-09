@@ -55,6 +55,14 @@ on a page of them and that's what you get. Longer selections become the notes, w
 as the title. **On Gmail**, an open thread's subject becomes the title, and capturing the same
 thread twice doesn't create a duplicate.
 
+**Automatic deadlines:** when the form opens, it reads what you captured — on Gmail, the open
+email and the date it was sent — and asks Gemini for the deadline, using the key in EisenQ's
+settings. A date it finds is pre-selected; one that has already passed is pointed out instead of
+selected. Relative phrases like "6 days to file" count from the email's sent date, not from today.
+A date is only shown if the words stating it are really in the email, so it can't invent one. On
+other sites, highlight the text that includes the date before capturing. Without a Gemini key the
+form says so and works as before.
+
 **If something goes wrong:** the icon flashes **!** and the full form opens with everything you
 selected, so a failed capture never loses anything. If the connection was revoked, the connect
 page opens instead.
@@ -66,7 +74,7 @@ page opens instead.
 | In-place popup with deadline chips (one-click capture has no deadline yet) | Phase 2 |
 | Gmail sender, read from the page | Phase 3 |
 | Offline queue — today a failure falls back to the form instead | Phase 3 |
-| AI quadrant and deadline suggestion | Phase 4 |
+| AI quadrant suggestion, and automatic deadlines for one-click capture | Phase 4 (deadlines in the form are done) |
 | Source chip in the dashboard, list of connected browsers in Settings | Phase 5 |
 | Captures appearing without reloading the dashboard | Phase 5 |
 

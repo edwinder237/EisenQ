@@ -7,7 +7,7 @@ import CaptureForm from "./CaptureForm";
 // so no token or CORS is involved at this stage.
 export default function CapturePage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-gray-950" />}>
+    <Suspense fallback={<div className="min-h-screen" />}>
       <CaptureForm />
     </Suspense>
   );
