@@ -1,4 +1,6 @@
-const DEFAULT_APP_ORIGIN = "https://eisenq-lumevetech.vercel.app";
+const DEFAULT_APP_ORIGIN = "https://www.eisenq.app";
+// Kept in step with sw.js: an address where sign-in can't load is ignored.
+const RETIRED_APP_ORIGINS = ["https://eisenq-lumevetech.vercel.app"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -10,7 +12,8 @@ function showMessage(el, text, ok) {
 
 async function getAppOrigin() {
   const { appOrigin } = await chrome.storage.sync.get("appOrigin");
-  return (appOrigin || DEFAULT_APP_ORIGIN).replace(/\/+$/, "");
+  const stored = (appOrigin || "").replace(/\/+$/, "");
+  return stored && !RETIRED_APP_ORIGINS.includes(stored) ? stored : DEFAULT_APP_ORIGIN;
 }
 
 async function render() {
