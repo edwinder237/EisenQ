@@ -55,10 +55,14 @@ on a page of them and that's what you get. Longer selections become the notes, w
 as the title. **On Gmail**, an open thread's subject becomes the title, and capturing the same
 thread twice doesn't create a duplicate.
 
-**Automatic deadlines:** when the form opens, it reads what you captured — on Gmail, the open
-email and the date it was sent — and asks Gemini for the deadline, using the key in EisenQ's
-settings. A date it finds is pre-selected; one that has already passed is pointed out instead of
-selected. Relative phrases like "6 days to file" count from the email's sent date, not from today.
+**Automatic dates:** when the form opens, it reads what you captured — on Gmail, the open email
+and the date it was sent — and asks Gemini for the date that matters, using the key in EisenQ's
+settings. A **deadline** ("file by April 30") is pre-selected as the due date. An **event**
+("as of February 1, 2027 your rate will increase") isn't; instead the form offers **Remind me: On
+Feb 1 · 1 week before · 30 days before**, and the event's real date is written into the task's
+notes so an early reminder never loses what it's for. A date that has already passed is pointed out
+instead of selected. Relative phrases like "6 days to file" count from the email's sent date, not
+from today.
 A date is only shown if the words stating it are really in the email, so it can't invent one. On
 other sites, highlight the text that includes the date before capturing. Without a Gemini key the
 form says so and works as before.

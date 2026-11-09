@@ -3,12 +3,13 @@ import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
 import { userSettingsCollection } from "~/server/db";
 import { decrypt } from "~/server/crypto";
-import { DeadlineServiceError, detectDeadline, isValidTimeZone } from "~/server/deadline";
+import { DeadlineServiceError, detectKeyDate, isValidTimeZone } from "~/server/deadline";
 
-// POST /api/capture/deadline — the capture form asks for the deadline in what the
-// user just captured. Clerk-authenticated like the rest of the app (the form is a
-// signed-in page), and the user's own Gemini key is decrypted here, server-side,
-// so it never reaches the browser.
+// POST /api/capture/deadline — the capture form asks for the date that matters in
+// what the user just captured: a deadline, or an event worth a reminder.
+// Clerk-authenticated like the rest of the app (the form is a signed-in page),
+// and the user's own Gemini key is decrypted here, server-side, so it never
+// reaches the browser.
 
 // Per user, so a stuck page can't run up the user's Gemini bill. Per-instance on
 // serverless, like the app's other limiters.
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
     const input = parsed.data;
 
     if (!input.title.trim() && !input.text.trim()) {
-      return NextResponse.json({ configured: true, dueDate: null });
+      return NextResponse.json({ configured: true, date: null });
     }
 
     const settings = await userSettingsCollection.findOne(
@@ -70,10 +71,10 @@ export async function POST(request: NextRequest) {
       try { apiKey = decrypt(settings.geminiApiKeyEnc); } catch { /* corrupt/rotated key */ }
     }
     if (!apiKey) {
-      return NextResponse.json({ configured: false, dueDate: null });
+      return NextResponse.json({ configured: false, date: null });
     }
 
-    const result = await detectDeadline(apiKey, input);
+    const result = await detectKeyDate(apiKey, input);
     return NextResponse.json({ configured: true, ...result }, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     if (err instanceof DeadlineServiceError || (err instanceof Error && err.name === "TimeoutError")) {

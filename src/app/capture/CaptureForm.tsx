@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
-import { addDays, endOfDay, format } from "date-fns";
+import { addDays, endOfDay, format, subDays } from "date-fns";
 import { Check, ExternalLink, Loader2 } from "lucide-react";
 // Imported rather than redeclared: the dashboard already keeps its own copy of this
 // union (page.tsx:91), and a third would be one too many. `import type` is erased at
@@ -35,15 +35,25 @@ const DEADLINE_CHIPS: { key: Deadline; label: string }[] = [
   { key: "pick", label: "Pick…" },
 ];
 
-// What the automatic deadline check found, if anything.
+// What the automatic check found, if anything: a deadline (act by it) or an
+// event (something happens on it, like a rate increase taking effect).
+type KeyDateKind = "deadline" | "event";
+
 type Detection =
   | { state: "idle" }
   | { state: "checking" }
-  | { state: "found"; date: string; quote: string }
-  | { state: "past"; date: string; quote: string }
+  | { state: "found"; kind: KeyDateKind; date: string; quote: string; label: string | null }
+  | { state: "past"; kind: KeyDateKind; date: string; quote: string; label: string | null }
   | { state: "none" }
   | { state: "unconfigured" }
   | { state: "unavailable" };
+
+// One-click due dates around a detected date, for reminding yourself ahead of it.
+const REMINDER_OFFSETS: { key: string; daysBefore: number; label: (date: Date) => string }[] = [
+  { key: "day", daysBefore: 0, label: (d) => `On ${format(d, "MMM d")}` },
+  { key: "week", daysBefore: 7, label: () => "1 week before" },
+  { key: "month", daysBefore: 30, label: () => "30 days before" },
+];
 
 const TITLE_MAX = 500;
 const DESCRIPTION_MAX = 5000;
@@ -133,19 +143,31 @@ export default function CaptureForm() {
         }
         const data = (await res.json()) as {
           configured?: boolean;
-          dueDate?: string | null;
+          date?: string | null;
+          kind?: KeyDateKind;
           past?: boolean;
           quote?: string;
+          label?: string | null;
         };
         if (data.configured === false) {
           setDetection({ state: "unconfigured" });
-        } else if (!data.dueDate) {
+        } else if (!data.date) {
           setDetection({ state: "none" });
-        } else if (data.past) {
-          setDetection({ state: "past", date: data.dueDate, quote: data.quote ?? "" });
         } else {
-          setDetection({ state: "found", date: data.dueDate, quote: data.quote ?? "" });
-          if (!userChoseDeadline.current) applyDetectedDate(data.dueDate);
+          const found = {
+            kind: data.kind === "deadline" ? ("deadline" as const) : ("event" as const),
+            date: data.date,
+            quote: data.quote ?? "",
+            label: data.label ?? null,
+          };
+          if (data.past) {
+            setDetection({ state: "past", ...found });
+          } else {
+            setDetection({ state: "found", ...found });
+            // A deadline is the due date. An event isn't — the user picks how
+            // far ahead to be reminded, from the options shown under the chips.
+            if (found.kind === "deadline" && !userChoseDeadline.current) applyDetectedDate(found.date);
+          }
         }
       } catch {
         if (!controller.signal.aborted) setDetection({ state: "unavailable" });
@@ -174,6 +196,11 @@ export default function CaptureForm() {
     setDeadline(next);
   }
 
+  function chooseReminder(ymd: string) {
+    userChoseDeadline.current = true;
+    applyDetectedDate(ymd);
+  }
+
   const dueDateIso = useMemo(() => {
     const now = new Date();
     switch (deadline) {
@@ -194,13 +221,35 @@ export default function CaptureForm() {
     }
   }, [deadline, pickedDate]);
 
-  // The link back to the original page lives in the description.
+  // The date that will actually be saved, as YYYY-MM-DD, to highlight whichever
+  // reminder option produced it.
+  const savedYmd = dueDateIso ? localYmd(new Date(dueDateIso)) : null;
+
+  // "On Feb 1 · 1 week before · 30 days before" for a detected upcoming date.
+  // Options that would already be in the past are left out.
+  const reminderOptions = useMemo(() => {
+    if (detection.state !== "found") return [];
+    const target = new Date(`${detection.date}T00:00:00`);
+    const today = localYmd(new Date());
+    return REMINDER_OFFSETS.map((o) => {
+      const ymd = localYmd(subDays(target, o.daysBefore));
+      return { key: o.key, ymd, label: o.label(target) };
+    }).filter((o) => o.ymd >= today);
+  }, [detection]);
+
+  // The link back to the original page lives in the description. So does the
+  // detected date whenever the task isn't due on it — a reminder set a month
+  // early must not lose what it is a reminder of.
   const description = useMemo(() => {
     const parts: string[] = [];
     if (notes.trim()) parts.push(notes.trim());
+    if (detection.state === "found" && (detection.kind === "event" || savedYmd !== detection.date)) {
+      const when = format(new Date(`${detection.date}T00:00:00`), "EEE, MMM d, yyyy");
+      parts.push(`Key date: ${when}${detection.label ? ` — ${detection.label}` : ""}`);
+    }
     if (sourceUrl) parts.push(`Source: ${sourceUrl}`);
     return parts.join("\n\n").slice(0, DESCRIPTION_MAX);
-  }, [notes, sourceUrl]);
+  }, [notes, sourceUrl, detection, savedYmd]);
 
   async function capture(quadrant: TaskQuadrant) {
     if (!title.trim()) {
@@ -355,9 +404,38 @@ export default function CaptureForm() {
             />
           )}
           <DetectionNote detection={detection} />
+          {reminderOptions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[12px]" style={{ color: "var(--muted)" }}>
+                Remind me
+              </span>
+              {reminderOptions.map((o) => {
+                const active = savedYmd === o.ymd;
+                return (
+                  <button
+                    key={o.key}
+                    type="button"
+                    onClick={() => chooseReminder(o.ymd)}
+                    className="rounded-full border px-2.5 py-[3px] text-[11.5px] transition-colors"
+                    style={
+                      active
+                        ? { background: "var(--pill-active)", borderColor: "var(--pill-active)", color: "var(--btn-fg)" }
+                        : { background: "transparent", borderColor: "var(--accent)", color: "var(--accent)" }
+                    }
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {dueDateIso && (
             <p className="text-[12px]" style={{ color: "var(--muted)" }}>
-              Due {format(new Date(dueDateIso), "EEE, MMM d")}
+              Due{" "}
+              {format(
+                new Date(dueDateIso),
+                new Date(dueDateIso).getFullYear() === new Date().getFullYear() ? "EEE, MMM d" : "EEE, MMM d, yyyy",
+              )}
             </p>
           )}
         </div>
@@ -424,23 +502,31 @@ function DetectionNote({ detection }: { detection: Detection }) {
           <Loader2 className="mt-px h-3 w-3 shrink-0 animate-spin" /> Looking for a deadline…
         </p>
       );
-    case "found":
+    case "found": {
       // Only the evidence: the "Due …" line below always shows the date that
       // will actually be saved, even after the user changes it.
+      const when = format(new Date(`${detection.date}T00:00:00`), "EEE, MMM d, yyyy");
+      const heading =
+        detection.label ?? (detection.kind === "deadline" ? "Deadline found" : "Coming up");
       return (
         <p className={base} style={{ color: "var(--muted)" }}>
           <span>
-            <span style={{ color: "var(--accent)" }}>Deadline found</span>
-            {detection.quote ? <>: &ldquo;{detection.quote}&rdquo;</> : null}
+            <span style={{ color: "var(--accent)" }}>
+              {heading}
+              {detection.kind === "event" || detection.label ? ` · ${when}` : ""}
+            </span>
+            {detection.quote ? <> &mdash; &ldquo;{detection.quote}&rdquo;</> : null}
           </span>
         </p>
       );
+    }
     case "past":
       return (
         <p className={base} style={{ color: "var(--tag-fg)" }}>
           <span>
-            Mentions {format(new Date(`${detection.date}T00:00:00`), "MMM d, yyyy")}, which has already passed
-            {detection.quote && <> (&ldquo;{detection.quote}&rdquo;)</>}. Pick a date yourself if it still matters.
+            Mentions {format(new Date(`${detection.date}T00:00:00`), "MMM d, yyyy")}
+            {detection.label ? ` (${detection.label})` : ""}, which has already passed
+            {detection.quote && <> &mdash; &ldquo;{detection.quote}&rdquo;</>}. Pick a date yourself if it still matters.
           </span>
         </p>
       );
