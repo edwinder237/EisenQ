@@ -32,18 +32,15 @@ If the button reports that the extension isn't responding, use **Connect manuall
 instead** on that page and paste the code into the options page under *Connect with a code
 instead*.
 
-### Testing before this is deployed
+### Which address
 
-The deployed app only gains `/connect-extension` and `/api/capture` once this branch is merged
-and Vercel redeploys. Until then, test against your local server:
+The extension uses **`https://www.eisenq.app`** by default. Use the `www` address, not a
+`*.vercel.app` one: Clerk's production keys only work on `eisenq.app` and its subdomains, so on
+a Vercel address the sign-in page loads blank. (The bare `eisenq.app` should work too once its
+DNS points only at Vercel.)
 
-1. `pnpm dev` in the project root.
-2. In the extension's **Options**, set **App** to `http://localhost:3000` and save.
-3. Connect as above.
-
-The deployed app at `eisenq-lumevetech.vercel.app` also needs **Vercel Authentication turned off
-for Production** (Vercel → project → Settings → Deployment Protection). While it's on, every
-request from the extension gets a Vercel login page instead of the app.
+To test changes locally instead, run `pnpm dev`, set **App** to `http://localhost:3000` in the
+extension's **Options**, and connect from there.
 
 ## Use
 

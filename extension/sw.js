@@ -8,11 +8,17 @@
 //     extension received from the app's /connect-extension page (Phase 1).
 // See docs/chrome-extension-capture-design.md.
 
-const DEFAULT_APP_ORIGIN = "https://eisenq-lumevetech.vercel.app";
+// www, not the bare domain: Clerk's production keys only work on eisenq.app and
+// its subdomains, so the *.vercel.app addresses show a blank sign-in page.
+const DEFAULT_APP_ORIGIN = "https://www.eisenq.app";
+
+// Addresses an earlier version defaulted to that can never work, because sign-in
+// doesn't load there. A stored value matching one is ignored.
+const RETIRED_APP_ORIGINS = ["https://eisenq-lumevetech.vercel.app"];
 
 // Only these origins may hand this extension a token. externally_connectable in
 // the manifest already restricts who can message us; this re-checks the sender.
-const TRUSTED_APP_ORIGINS = [/^http:\/\/localhost(:\d+)?$/, /^https:\/\/eisenq-lumevetech\.vercel\.app$/];
+const TRUSTED_APP_ORIGINS = [/^http:\/\/localhost(:\d+)?$/, /^https:\/\/(www\.)?eisenq\.app$/];
 
 // A selection shorter than this becomes the task title; anything longer is treated
 // as notes and the page title is used instead. Picking one offer off a page of
@@ -35,7 +41,8 @@ const QUADRANTS = [
 
 async function getAppOrigin() {
   const { appOrigin } = await chrome.storage.sync.get("appOrigin");
-  return (appOrigin || DEFAULT_APP_ORIGIN).replace(/\/+$/, "");
+  const stored = (appOrigin || "").replace(/\/+$/, "");
+  return stored && !RETIRED_APP_ORIGINS.includes(stored) ? stored : DEFAULT_APP_ORIGIN;
 }
 
 async function getToken() {
