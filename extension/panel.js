@@ -419,11 +419,10 @@ function renderForm(capture, { retry = false } = {}) {
   refresh();
 
   findKeyDate({ title: capture.title, text, sentAt: capture.sentAt })
-    .then(async ({ status, data }) => {
-      if (status === 401) {
-        await forgetToken();
-        return;
-      }
+    .then(({ status, data }) => {
+      // Any failure here, a 401 included, only means "no date this time". Saving
+      // is what decides whether the token is still good: an app that can't yet
+      // check dates with a token must not disconnect the browser.
       if (status < 200 || status >= 300) s.detection = { state: "unavailable" };
       else if (data.configured === false) s.detection = { state: "unconfigured" };
       else if (!data.date) s.detection = { state: "none" };
