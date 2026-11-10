@@ -18,6 +18,9 @@ const isPublicRoute = createRouteMatcher([
   // here only stops this middleware answering 401 before that check can run.
   // Exact path on purpose — /api/capture/connect must stay Clerk-protected.
   "/api/capture",
+  // Same reason: the side panel calls this with its token. The handler accepts
+  // a Clerk session or a valid token, and rejects everything else.
+  "/api/capture/deadline",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

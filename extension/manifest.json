@@ -1,18 +1,23 @@
 {
   "manifest_version": 3,
   "name": "EisenQ Capture",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Capture the page you're on, or the text you've selected, into an EisenQ quadrant.",
+  "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9KynOS/Bc9Fbzf1SO7EcEE8MOzmYOf2tjTcD9fbUBzZohiPZw4bHzENPtmYwcSGMNW+fIhUX9vZ/2pz4wOYuFGiWiq8GqpFNa1ylVRodkhBIA5GlpZJfYhmpsPeYXrT2TSAtS1VdIsMfhCpRKTOxWkoG6oH0djR6JlOgYh3gWA0x1b4NNnES61XYkiVsBJSGECXmTvuORBYqTy8HKBhQyL388kEztZIsY81zR8s739uK/lilYlVDpVTQU7LaA3wg3gJMvLxO3XpFZTy0Llx+GITuQr1qf73bqK7pc7Ku/q1QqqmC2kYYaovCs6cdMwqPk+ZN1QwhXbo/ZzOiZ/U9gwIDAQAB",
-  "permissions": ["activeTab", "scripting", "contextMenus", "storage"],
+  "permissions": ["activeTab", "scripting", "contextMenus", "storage", "sidePanel"],
+  "side_panel": {
+    "default_path": "panel.html"
+  },
   "externally_connectable": {
     "matches": ["http://localhost/*", "https://www.eisenq.app/*", "https://eisenq.app/*"]
   },
   "background": {
-    "service_worker": "sw.js"
+    "service_worker": "sw.js",
+    "type": "module"
   },
   "action": {
-    "default_title": "Add to EisenQ"
+    "default_title": "EisenQ"
   },
   "options_page": "options.html",
   "commands": {
@@ -21,7 +26,7 @@
         "default": "Alt+Shift+E",
         "mac": "Alt+Shift+E"
       },
-      "description": "Add the current page to EisenQ"
+      "description": "Open or fold the EisenQ panel"
     }
   }
 }

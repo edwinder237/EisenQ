@@ -21,9 +21,9 @@ Design and roadmap: [`docs/chrome-extension-capture-design.md`](../docs/chrome-e
 
 ## Connect (once per browser)
 
-Right-click the extension icon → **Options** → **Connect to EisenQ**. A tab opens on the app;
-sign in if asked, confirm the account, click **Connect this browser**, and the tab closes itself.
-The options page then shows **Connected**.
+Click the EisenQ icon. The first time, the panel shows **Connect to EisenQ** — click it, sign in
+if asked, confirm the account, click **Connect this browser**, and that tab closes itself. The panel
+switches to the capture form on its own. (The same button is in the extension's **Options**.)
 
 Connecting points the extension at whichever app you connected from, so connecting from
 `localhost` and from the deployed app both just work.
@@ -46,16 +46,24 @@ extension's **Options**, and connect from there.
 
 | How | What happens |
 |---|---|
-| Right-click → **Add to EisenQ ▸ Do First** (or any quadrant) | Filed in one click, no window. The icon flashes **✓** |
-| Right-click → **Add to EisenQ ▸ Open full form…** | Opens the form with deadline chips |
-| Click the icon, or **Alt+Shift+E** | Opens the form |
+| Click the icon, or **Alt+Shift+E** | Opens the EisenQ panel beside the page. Again folds it |
+| Right-click → **Add to EisenQ ▸ Do First** (or any quadrant) | Filed in one click, no panel. The icon flashes **✓** |
+| Right-click → **Add to EisenQ ▸ Open panel…** | Opens the panel, reading what you just selected |
+
+**The panel** sits on the right of Chrome, next to the page — never over it, never a new window,
+and only ever one. It belongs to the tab you opened it on: switch tabs and it hides, come back and
+it's there as you left it, half-filled task included. You can keep reading, scrolling and
+selecting in the page while it's open. After you file a task it stays open; **Capture something
+else** reads the page again, and so does the **↻** button (for example after opening another email
+in the same Gmail tab). If the tab has moved to a different site, fold the panel and open it again
+so it can read the new page.
 
 **What becomes the title:** a selection under 120 characters becomes the title — select one offer
 on a page of them and that's what you get. Longer selections become the notes, with the page title
 as the title. **On Gmail**, an open thread's subject becomes the title, and capturing the same
 thread twice doesn't create a duplicate.
 
-**Automatic dates:** when the form opens, it reads what you captured — on Gmail, the open email
+**Automatic dates:** when the panel opens, it reads what you captured — on Gmail, the open email
 and the date it was sent — and asks Gemini for the date that matters, using the key in EisenQ's
 settings. A **deadline** ("file by April 30") is pre-selected as the due date. An **event**
 ("as of February 1, 2027 your rate will increase") isn't; instead the form offers **Remind me: On
@@ -67,17 +75,19 @@ A date is only shown if the words stating it are really in the email, so it can'
 other sites, highlight the text that includes the date before capturing. Without a Gemini key the
 form says so and works as before.
 
-**If something goes wrong:** the icon flashes **!** and the full form opens with everything you
-selected, so a failed capture never loses anything. If the connection was revoked, the connect
-page opens instead.
+**If something goes wrong:** when a one-click capture can't be saved, the icon shows a red **!**
+and the capture is kept. Click the icon and the panel opens with it filled in, ready to file again.
+Nothing you selected is lost. If the connection was revoked, the panel asks you to connect again.
+
+**Permissions:** the panel reads a page only after you click the icon, the shortcut or the menu on
+it (Chrome's `activeTab`), so the extension never asks to read all websites.
 
 ## Not yet
 
 | Missing | Arrives in |
 |---|---|
-| In-place popup with deadline chips (one-click capture has no deadline yet) | Phase 2 |
 | Gmail sender, read from the page | Phase 3 |
-| Offline queue — today a failure falls back to the form instead | Phase 3 |
+| Automatic retry when you're offline (today a failed save waits for you in the panel) | Phase 3 |
 | AI quadrant suggestion, and automatic deadlines for one-click capture | Phase 4 (deadlines in the form are done) |
 | Source chip in the dashboard, list of connected browsers in Settings | Phase 5 |
 | Captures appearing without reloading the dashboard | Phase 5 |

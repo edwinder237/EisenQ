@@ -1,18 +1,27 @@
-import { type NextRequest, NextResponse } from "next/server";
+import { type NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
 import { userSettingsCollection } from "~/server/db";
 import { decrypt } from "~/server/crypto";
+import { findUserIdByCaptureToken } from "~/server/capture-token";
+import { extensionJson as json, extensionPreflight } from "~/server/extension-cors";
 import { DeadlineServiceError, detectKeyDate, isValidTimeZone } from "~/server/deadline";
 
-// POST /api/capture/deadline — the capture form asks for the date that matters in
-// what the user just captured: a deadline, or an event worth a reminder.
-// Clerk-authenticated like the rest of the app (the form is a signed-in page),
-// and the user's own Gemini key is decrypted here, server-side, so it never
-// reaches the browser.
+// POST /api/capture/deadline — asks for the date that matters in what the user
+// just captured: a deadline, or an event worth a reminder.
+//
+// Two callers, two kinds of authentication, both checked here before anything is
+// read: the app's own /capture page sends the Clerk session cookie, and the
+// extension's side panel sends its X-Capture-Token (it can't carry the cookie).
+// That is why this route is listed in isPublicRoute in middleware.ts — "public"
+// there only means the middleware doesn't insist on Clerk.
+//
+// The user's own Gemini key is decrypted here, server-side, so it never reaches
+// the browser.
 
-// Per user, so a stuck page can't run up the user's Gemini bill. Per-instance on
-// serverless, like the app's other limiters.
+// Per IP before authenticating, so guessing tokens can't hammer the database, and
+// per user after, so a stuck page can't run up the user's Gemini bill.
+// Per-instance on serverless, like the app's other limiters.
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT = 20;
 const RATE_WINDOW = 60_000;
@@ -39,27 +48,37 @@ const deadlineSchema = z.object({
   timeZone: z.string().max(64).refine(isValidTimeZone, "Unknown time zone"),
 });
 
+export async function OPTIONS(request: NextRequest) {
+  return extensionPreflight(request.headers.get("origin"));
+}
+
 export async function POST(request: NextRequest) {
+  const origin = request.headers.get("origin");
+
   try {
-    const { userId } = await auth();
-    if (!userId) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    if (!checkRateLimit(`ip:${ip}`)) {
+      return json({ error: "Too many requests" }, 429, origin);
     }
-    if (!checkRateLimit(userId)) {
-      return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+
+    const { userId: sessionUserId } = await auth();
+    const token = request.headers.get("x-capture-token");
+    const userId = sessionUserId ?? (token ? await findUserIdByCaptureToken(token) : null);
+    if (!userId) {
+      return json({ error: "Unauthorized" }, 401, origin);
+    }
+    if (!checkRateLimit(`user:${userId}`)) {
+      return json({ error: "Too many requests" }, 429, origin);
     }
 
     const parsed = deadlineSchema.safeParse(await request.json());
     if (!parsed.success) {
-      return NextResponse.json(
-        { error: "Invalid request data", details: parsed.error.flatten() },
-        { status: 400 },
-      );
+      return json({ error: "Invalid request data", details: parsed.error.flatten() }, 400, origin);
     }
     const input = parsed.data;
 
     if (!input.title.trim() && !input.text.trim()) {
-      return NextResponse.json({ configured: true, date: null });
+      return json({ configured: true, date: null }, 200, origin);
     }
 
     const settings = await userSettingsCollection.findOne(
@@ -71,15 +90,15 @@ export async function POST(request: NextRequest) {
       try { apiKey = decrypt(settings.geminiApiKeyEnc); } catch { /* corrupt/rotated key */ }
     }
     if (!apiKey) {
-      return NextResponse.json({ configured: false, date: null });
+      return json({ configured: false, date: null }, 200, origin);
     }
 
     const result = await detectKeyDate(apiKey, input);
-    return NextResponse.json({ configured: true, ...result }, { headers: { "Cache-Control": "no-store" } });
+    return json({ configured: true, ...result }, 200, origin, { "Cache-Control": "no-store" });
   } catch (err) {
     if (err instanceof DeadlineServiceError || (err instanceof Error && err.name === "TimeoutError")) {
-      return NextResponse.json({ error: "Deadline check unavailable" }, { status: 502 });
+      return json({ error: "Deadline check unavailable" }, 502, origin);
     }
-    return NextResponse.json({ error: "Failed to check for a deadline" }, { status: 500 });
+    return json({ error: "Failed to check for a deadline" }, 500, origin);
   }
 }

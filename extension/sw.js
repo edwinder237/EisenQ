@@ -1,250 +1,117 @@
 // EisenQ Capture — service worker.
 //
 // Two ways to file a task:
-//   • Icon / Alt+Shift+E / "Open full form…" — opens the app's /capture page in a
-//     small window (Phase 0). Uses the normal signed-in session; no token needed.
-//   • Right-click → Add to EisenQ ▸ <quadrant> — files it in one click with a
-//     direct POST to /api/capture, authenticated by the capture token this
-//     extension received from the app's /connect-extension page (Phase 1).
-// See docs/chrome-extension-capture-design.md.
+//   • The side panel (panel.html) — the EisenQ icon or Alt+Shift+E opens it next
+//     to the page and folds it again; right-click → "Open panel…" opens it too.
+//     One panel per tab: Chrome hides it when you switch tabs and brings it back,
+//     as you left it, when you return.
+//   • Right-click → Add to EisenQ ▸ <quadrant> — files it in one click, no panel.
+// Both save with the capture token this extension received from the app's
+// /connect-extension page. See docs/chrome-extension-capture-design.md.
 
-// www, not the bare domain: Clerk's production keys only work on eisenq.app and
-// its subdomains, so the *.vercel.app addresses show a blank sign-in page.
-const DEFAULT_APP_ORIGIN = "https://www.eisenq.app";
+import { QUADRANTS, getToken, isTrustedOrigin, openConnectPage } from "./lib/config.js";
+import { buildCapture, sourceFor } from "./lib/page.js";
+import { forgetToken, postCapture } from "./lib/api.js";
 
-// Addresses an earlier version defaulted to that can never work, because sign-in
-// doesn't load there. A stored value matching one is ignored.
-const RETIRED_APP_ORIGINS = ["https://eisenq-lumevetech.vercel.app"];
+// ---------- side panel ----------
 
-// Only these origins may hand this extension a token. externally_connectable in
-// the manifest already restricts who can message us; this re-checks the sender.
-const TRUSTED_APP_ORIGINS = [/^http:\/\/localhost(:\d+)?$/, /^https:\/\/(www\.)?eisenq\.app$/];
+// Only tab-specific panels exist. With the global panel off, switching to a tab
+// that has no panel of its own hides the panel instead of showing a shared one.
+// The icon click is handled here (not by Chrome) so it grants activeTab, which is
+// how the panel is allowed to read the page.
+void chrome.sidePanel.setOptions({ enabled: false }).catch(() => undefined);
+void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => undefined);
 
-// A selection shorter than this becomes the task title; anything longer is treated
-// as notes and the page title is used instead. Picking one offer off a page of
-// them is the common case, and that text makes a far better title.
-const TITLE_FROM_SELECTION_MAX = 120;
-
-const WINDOW_WIDTH = 480;
-const WINDOW_HEIGHT = 700;
-
-const QUADRANTS = [
-  { id: "urgent-important", title: "Do First" },
-  { id: "important-not-urgent", title: "Schedule" },
-  { id: "urgent-not-important", title: "Delegate" },
-  { id: "not-urgent-not-important", title: "Eliminate" },
-];
-
-// ---------- storage ----------
-// The app origin isn't secret, so it syncs. The token stays in local storage: it
-// belongs to this one browser, and each browser connects (and is revoked) on its own.
-
-async function getAppOrigin() {
-  const { appOrigin } = await chrome.storage.sync.get("appOrigin");
-  const stored = (appOrigin || "").replace(/\/+$/, "");
-  return stored && !RETIRED_APP_ORIGINS.includes(stored) ? stored : DEFAULT_APP_ORIGIN;
+// Both calls must go out immediately: open() only works inside the user's click,
+// so nothing may be awaited before it.
+function openPanel(tabId) {
+  void chrome.sidePanel
+    .setOptions({ tabId, path: `panel.html?tabId=${tabId}`, enabled: true })
+    .catch(() => undefined);
+  void chrome.sidePanel.open({ tabId }).catch(() => undefined);
 }
 
-async function getToken() {
-  const { captureToken } = await chrome.storage.local.get("captureToken");
-  return captureToken || null;
+// The icon toggles the panel. Whether it was already open can only be learned
+// asynchronously — too late to decide whether to open — so the click always
+// opens (a no-op if it's open), then asks the tab's panel how long it has been
+// open. One that predates the click means this click was meant to fold it.
+function togglePanel(tab) {
+  if (tab?.id == null) return;
+  const tabId = tab.id;
+  const clickedAt = Date.now();
+  openPanel(tabId);
+  void clearBadge(tabId);
+
+  void (async () => {
+    const reply = await chrome.runtime.sendMessage({ type: "panel:status", tabId }).catch(() => null);
+    if (!reply?.openedAt || reply.openedAt >= clickedAt - 300) return;
+    // close() is Chrome 141+; the panel can also close itself, which covers
+    // older versions. Whichever lands first wins; the other is a no-op.
+    if (chrome.sidePanel.close) await chrome.sidePanel.close({ tabId }).catch(() => undefined);
+    await chrome.runtime.sendMessage({ type: "panel:fold", tabId }).catch(() => undefined);
+  })();
 }
 
-function isTrustedOrigin(origin) {
-  return typeof origin === "string" && TRUSTED_APP_ORIGINS.some((re) => re.test(origin));
-}
+// ---------- badge ----------
 
-// ---------- page context ----------
-
-// activeTab is granted by the action click, the keyboard command and the context
-// menu, so this works without host permissions — but not on chrome:// pages.
-async function readSelection(tabId) {
-  try {
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => window.getSelection()?.toString() ?? "",
-    });
-    return (injection?.result ?? "").trim();
-  } catch {
-    return "";
-  }
-}
-
-// Gmail keeps the open thread's id at the end of the URL hash
-// (…/#inbox/FMfcgzQ…). It is the one stable per-item id we can dedupe on.
-function gmailThreadId(url) {
-  if (!url?.startsWith("https://mail.google.com/")) return null;
-  const match = /#[^?]*\/([A-Za-z0-9]{16,})$/.exec(url);
-  return match ? match[1] : null;
-}
-
-// "Re: Q4 budget - marc@example.com - Gmail" → "Re: Q4 budget"
-function cleanGmailTitle(title) {
-  return title.replace(/\s+-\s+\S+@\S+\s+-\s+Gmail$/, "").trim();
-}
-
-// The open email's text and the date it was sent, for deadline detection. The
-// sent date matters: "6 days to file" means six days from when it was sent.
-// Gmail's `a3s` (message body) and `g3` (date) classes have been stable for
-// years, but this is still best-effort — on any miss the capture simply goes
-// ahead without them.
-async function readGmailMessage(tabId) {
-  try {
-    const [injection] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const visible = (el) => el.offsetParent !== null;
-        // In a thread, the last expanded message is the one being read.
-        const bodies = [...document.querySelectorAll("div.a3s")].filter(
-          (el) => visible(el) && el.innerText.trim(),
-        );
-        const dates = [...document.querySelectorAll("span.g3")].filter(visible);
-        const body = bodies.length ? bodies[bodies.length - 1].innerText : "";
-        const date = dates[dates.length - 1];
-        const sentAt = date ? date.getAttribute("title") || date.innerText : "";
-        return { body: body.trim().slice(0, 8000), sentAt: sentAt.trim().slice(0, 100) };
-      },
-    });
-    return injection?.result ?? { body: "", sentAt: "" };
-  } catch {
-    return { body: "", sentAt: "" };
-  }
-}
-
-async function buildCapture(tab, selectionFromMenu) {
-  const selection = (selectionFromMenu ?? "").trim() || (await readSelection(tab.id));
-  const threadId = gmailThreadId(tab.url);
-  const pageTitle = threadId ? cleanGmailTitle(tab.title ?? "") : (tab.title ?? "").trim();
-  const message = threadId ? await readGmailMessage(tab.id) : { body: "", sentAt: "" };
-
-  const useSelectionAsTitle = selection.length > 0 && selection.length <= TITLE_FROM_SELECTION_MAX;
-
-  return {
-    title: useSelectionAsTitle ? selection : pageTitle,
-    text: useSelectionAsTitle ? "" : selection,
-    url: tab.url ?? "",
-    pageTitle,
-    kind: threadId ? "gmail" : selection ? "selection" : "page",
-    externalId: threadId ?? undefined,
-    // Only read for deadline detection on the form — never stored with the task.
-    body: message.body,
-    sentAt: message.sentAt,
-  };
-}
-
-// ---------- full-form window (Phase 0 path) ----------
-
-async function openCaptureWindow(tab, capture) {
-  const origin = await getAppOrigin();
-  const url = new URL("/capture", origin);
-  if (capture.title) url.searchParams.set("title", capture.title);
-  if (capture.url) url.searchParams.set("url", capture.url);
-  if (capture.text) url.searchParams.set("text", capture.text);
-  // The email body rides in the #fragment, which the browser never sends to the
-  // server — so it stays out of request logs and redirect URLs. The form reads
-  // it client-side and posts it, in a request body, to the deadline check.
-  if (capture.body || capture.sentAt) {
-    url.hash = "ctx=" + encodeURIComponent(JSON.stringify({ body: capture.body, sentAt: capture.sentAt }));
-  }
-
-  // Centre over the current window so it lands on the same screen.
-  const parent = await chrome.windows.get(tab.windowId).catch(() => null);
-  const left =
-    parent?.left != null && parent?.width != null
-      ? Math.round(parent.left + (parent.width - WINDOW_WIDTH) / 2)
-      : undefined;
-  const top = parent?.top != null ? parent.top + 80 : undefined;
-
-  await chrome.windows.create({
-    url: url.toString(),
-    type: "popup",
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
-    left,
-    top,
-  });
-}
-
-async function openConnectPage() {
-  const origin = await getAppOrigin();
-  await chrome.tabs.create({ url: new URL("/connect-extension", origin).toString() });
-}
-
-// ---------- one-click capture (Phase 1 path) ----------
-
-async function flashBadge(tabId, text, color, title) {
+async function setBadge(tabId, text, color, title) {
   try {
     await chrome.action.setBadgeBackgroundColor({ tabId, color });
     await chrome.action.setBadgeText({ tabId, text });
-    if (title) await chrome.action.setTitle({ tabId, title });
-    setTimeout(() => {
-      void chrome.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
-      void chrome.action.setTitle({ tabId, title: "Add to EisenQ" }).catch(() => undefined);
-    }, 3000);
+    await chrome.action.setTitle({ tabId, title });
   } catch {
     /* the tab may have closed */
   }
 }
 
+async function clearBadge(tabId) {
+  await chrome.action.setBadgeText({ tabId, text: "" }).catch(() => undefined);
+  await chrome.action.setTitle({ tabId, title: "EisenQ" }).catch(() => undefined);
+}
+
+// ---------- one-click capture ----------
+
 async function quickCapture(tab, quadrant, selectionFromMenu) {
   const capture = await buildCapture(tab, selectionFromMenu);
 
-  const token = await getToken();
-  if (!token) {
+  if (!(await getToken())) {
     await openConnectPage();
     return;
   }
 
+  // A capture that can't be saved is parked for the tab, and the panel offers it
+  // again the next time it opens there. Nothing the user picked is lost.
+  const park = async (why) => {
+    await chrome.storage.session.set({ [`pending:${tab.id}`]: capture });
+    await setBadge(tab.id, "!", "#dc2626", `${why} Click the EisenQ icon to finish it.`);
+  };
+
   if (!capture.title) {
-    // Nothing usable to title it with; let the user write one.
-    await openCaptureWindow(tab, capture);
+    await park("Nothing to title this with.");
     return;
   }
 
-  const source = /^https?:\/\//i.test(capture.url)
-    ? {
-        kind: capture.kind,
-        url: capture.url,
-        title: capture.pageTitle || undefined,
-        externalId: capture.externalId,
-      }
-    : undefined;
-
   try {
-    const origin = await getAppOrigin();
-    const res = await fetch(new URL("/api/capture", origin), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Capture-Token": token },
-      body: JSON.stringify({
-        title: capture.title.slice(0, 500),
-        description: capture.text ? capture.text.slice(0, 5000) : undefined,
-        quadrant,
-        source,
-      }),
+    const { status, data } = await postCapture({
+      title: capture.title.slice(0, 500),
+      description: capture.text ? capture.text.slice(0, 5000) : undefined,
+      quadrant,
+      source: sourceFor(capture),
     });
 
-    if (res.status === 401) {
+    if (status === 401) {
       // Revoked in the app, or never valid for this origin. Reconnect.
-      await chrome.storage.local.remove("captureToken");
+      await forgetToken();
       await openConnectPage();
       return;
     }
+    if (status < 200 || status >= 300) throw new Error(`HTTP ${status}`);
 
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const { deduped } = await res.json();
-    const name = QUADRANTS.find((q) => q.id === quadrant)?.title ?? "EisenQ";
-    await flashBadge(
-      tab.id,
-      "✓",
-      "#16a34a",
-      deduped ? "Already in EisenQ" : `Added to ${name}`,
-    );
+    const name = QUADRANTS.find((q) => q.id === quadrant)?.name ?? "EisenQ";
+    await setBadge(tab.id, "✓", "#16a34a", data.deduped ? "Already in EisenQ" : `Added to ${name}`);
+    setTimeout(() => void clearBadge(tab.id), 3000);
   } catch {
-    // Network or server failure. Never drop a capture: fall back to the form,
-    // which keeps everything the user selected.
-    await flashBadge(tab.id, "!", "#dc2626", "Couldn't reach EisenQ — opened the form instead");
-    await openCaptureWindow(tab, capture);
+    await park("Couldn't reach EisenQ.");
   }
 }
 
@@ -278,14 +145,10 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
 
 // ---------- entry points ----------
 
-chrome.action.onClicked.addListener((tab) => {
-  void buildCapture(tab).then((capture) => openCaptureWindow(tab, capture));
-});
+chrome.action.onClicked.addListener((tab) => togglePanel(tab));
 
 chrome.commands.onCommand.addListener((command, tab) => {
-  if (command === "capture" && tab) {
-    void buildCapture(tab).then((capture) => openCaptureWindow(tab, capture));
-  }
+  if (command === "capture") togglePanel(tab);
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -293,18 +156,21 @@ chrome.runtime.onInstalled.addListener(() => {
     const contexts = ["page", "selection", "link"];
     chrome.contextMenus.create({ id: "eisenq", title: "Add to EisenQ", contexts });
     for (const q of QUADRANTS) {
-      chrome.contextMenus.create({ id: `eisenq:${q.id}`, parentId: "eisenq", title: q.title, contexts });
+      chrome.contextMenus.create({ id: `eisenq:${q.id}`, parentId: "eisenq", title: q.name, contexts });
     }
     chrome.contextMenus.create({ id: "eisenq:sep", parentId: "eisenq", type: "separator", contexts });
-    chrome.contextMenus.create({ id: "eisenq:form", parentId: "eisenq", title: "Open full form…", contexts });
+    chrome.contextMenus.create({ id: "eisenq:panel", parentId: "eisenq", title: "Open panel…", contexts });
   });
 });
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (!tab?.id || typeof info.menuItemId !== "string") return;
+  if (tab?.id == null || typeof info.menuItemId !== "string") return;
 
-  if (info.menuItemId === "eisenq:form") {
-    void buildCapture(tab, info.selectionText).then((capture) => openCaptureWindow(tab, capture));
+  if (info.menuItemId === "eisenq:panel") {
+    openPanel(tab.id);
+    void clearBadge(tab.id);
+    // An already-open panel re-reads the page, picking up what was just selected.
+    void chrome.runtime.sendMessage({ type: "panel:refresh", tabId: tab.id }).catch(() => undefined);
     return;
   }
 
@@ -312,4 +178,9 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (QUADRANTS.some((q) => q.id === quadrant)) {
     void quickCapture(tab, quadrant, info.selectionText);
   }
+});
+
+// A closed tab's parked capture has nowhere to go.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void chrome.storage.session.remove(`pending:${tabId}`).catch(() => undefined);
 });
