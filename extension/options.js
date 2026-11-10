@@ -1,6 +1,4 @@
-const DEFAULT_APP_ORIGIN = "https://www.eisenq.app";
-// Kept in step with sw.js: an address where sign-in can't load is ignored.
-const RETIRED_APP_ORIGINS = ["https://eisenq-lumevetech.vercel.app"];
+import { DEFAULT_APP_ORIGIN, getAppOrigin, openConnectPage } from "./lib/config.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -8,12 +6,6 @@ function showMessage(el, text, ok) {
   el.style.color = ok ? "#4ade80" : "#f87171";
   el.textContent = text;
   if (ok) setTimeout(() => (el.textContent = ""), 2000);
-}
-
-async function getAppOrigin() {
-  const { appOrigin } = await chrome.storage.sync.get("appOrigin");
-  const stored = (appOrigin || "").replace(/\/+$/, "");
-  return stored && !RETIRED_APP_ORIGINS.includes(stored) ? stored : DEFAULT_APP_ORIGIN;
 }
 
 async function render() {
@@ -33,10 +25,7 @@ async function render() {
   $("origin").value = origin;
 }
 
-$("connect").addEventListener("click", async () => {
-  const origin = await getAppOrigin();
-  await chrome.tabs.create({ url: new URL("/connect-extension", origin).toString() });
-});
+$("connect").addEventListener("click", () => void openConnectPage());
 
 $("disconnect").addEventListener("click", async () => {
   await chrome.storage.local.remove(["captureToken", "connectedAt"]);

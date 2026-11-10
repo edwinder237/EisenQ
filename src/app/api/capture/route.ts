@@ -1,9 +1,9 @@
-import { type NextRequest, NextResponse } from "next/server";
+import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { tasksCollection } from "~/server/db";
 import type { Task } from "~/server/db/schema";
 import { findUserIdByCaptureToken } from "~/server/capture-token";
-import { EXTENSION_ORIGIN } from "~/lib/extension";
+import { extensionJson as json, extensionPreflight } from "~/server/extension-cors";
 
 // POST /api/capture — the browser capture extension files a task here.
 //
@@ -11,23 +11,6 @@ import { EXTENSION_ORIGIN } from "~/lib/extension";
 // carry the session cookie. That is why this route is listed in isPublicRoute in
 // middleware.ts — "public" there only means the middleware doesn't check Clerk.
 // Every request is still authenticated below, before anything is read or written.
-
-// Only the extension may call this cross-origin. Other origins get no CORS
-// headers at all, so the browser blocks them from reading any response.
-function corsHeaders(origin: string | null): Record<string, string> {
-  if (origin !== EXTENSION_ORIGIN) return {};
-  return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-Capture-Token",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
-  };
-}
-
-function json(body: unknown, status: number, origin: string | null) {
-  return NextResponse.json(body, { status, headers: corsHeaders(origin) });
-}
 
 // Simple in-memory rate limiting, per IP, applied BEFORE the token lookup so that
 // guessing tokens can't hammer the database. Per-instance on serverless, like the
@@ -84,10 +67,7 @@ const captureSchema = z.object({
 });
 
 export async function OPTIONS(request: NextRequest) {
-  return new NextResponse(null, {
-    status: 204,
-    headers: corsHeaders(request.headers.get("origin")),
-  });
+  return extensionPreflight(request.headers.get("origin"));
 }
 
 export async function POST(request: NextRequest) {
