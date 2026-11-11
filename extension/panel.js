@@ -99,6 +99,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 // Connecting (in another tab) or a revoked token switches the view.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && "captureToken" in changes) void start();
+  // A right-click capture on this tab just finished.
+  const result = area === "session" ? changes[`result:${tabId}`]?.newValue : null;
+  if (result) void showResult(result);
 });
 
 // ---------- views ----------
@@ -144,13 +147,14 @@ function renderConnect() {
   );
 }
 
-function renderDone({ quadrantName, deduped }) {
+function renderDone({ quadrantName, deduped, title }) {
   show(
     el(
       "div",
       { class: "card", style: "align-items:flex-start" },
       el("div", { class: "check" }, icon("check", 22)),
       el("h1", { class: "title", style: "font-size:24px" }, deduped ? "Already in EisenQ" : `Filed in ${quadrantName}`),
+      title && el("p", { style: "margin:0;font-size:14px;color:var(--ink2)" }, `“${title}”`),
       el(
         "p",
         { class: "muted", style: "margin:0;font-size:13px" },
@@ -461,6 +465,16 @@ async function takePending() {
   return stored[key];
 }
 
+// The outcome of a right-click capture, reported by the service worker.
+let waitingForResult = false;
+
+async function showResult(result) {
+  waitingForResult = false;
+  await chrome.storage.session.remove([`result:${tabId}`, `filing:${tabId}`]);
+  if (result.ok) renderDone(result);
+  else void start(); // connect view, or the parked capture ready to retry
+}
+
 async function start() {
   if (!Number.isInteger(tabId)) {
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -469,6 +483,25 @@ async function start() {
 
   if (!(await getToken())) {
     renderConnect();
+    return;
+  }
+
+  // Opened by a right-click capture: show its result, or wait for it.
+  const keys = [`result:${tabId}`, `filing:${tabId}`];
+  const stored = await chrome.storage.session.get(keys);
+  if (stored[keys[0]]) {
+    await showResult(stored[keys[0]]);
+    return;
+  }
+  if (Date.now() - (stored[keys[1]] ?? 0) < 15000) {
+    waitingForResult = true;
+    renderLoading("Filing it…");
+    // Never hang: if no result arrives, fall back to the normal form.
+    setTimeout(() => {
+      if (!waitingForResult) return;
+      waitingForResult = false;
+      void chrome.storage.session.remove(keys[1]).then(start);
+    }, 15000);
     return;
   }
 
