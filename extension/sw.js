@@ -72,7 +72,7 @@ async function clearBadge(tabId) {
 // ---------- one-click capture ----------
 
 async function quickCapture(tab, quadrant, selectionFromMenu) {
-  const capture = await buildCapture(tab, selectionFromMenu);
+  const capture = await buildCapture(tab, selectionFromMenu, "selection");
 
   if (!(await getToken())) {
     await openConnectPage();

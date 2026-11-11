@@ -58,10 +58,10 @@ else** reads the page again, and so does the **↻** button (for example after o
 in the same Gmail tab). If the tab has moved to a different site, fold the panel and open it again
 so it can read the new page.
 
-**What becomes the title:** a selection under 120 characters becomes the title — select one offer
-on a page of them and that's what you get. Longer selections become the notes, with the page title
-as the title. **On Gmail**, an open thread's subject becomes the title, and capturing the same
-thread twice doesn't create a duplicate.
+**What becomes the title:** in the panel, the tab's title is the title and whatever you selected
+goes into Notes, line breaks kept. Right-clicking selected text files *that text*: its first line
+becomes the title, and the full selection goes into Notes when there's more. **On Gmail**, an open
+thread's subject is the title, and capturing the same thread twice doesn't create a duplicate.
 
 **Automatic dates:** when the panel opens, it reads what you captured — on Gmail, the open email
 and the date it was sent — and asks Gemini for the date that matters, using the key in EisenQ's
