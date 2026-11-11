@@ -5,7 +5,8 @@
 //     to the page and folds it again; right-click → "Open panel…" opens it too.
 //     One panel per tab: Chrome hides it when you switch tabs and brings it back,
 //     as you left it, when you return.
-//   • Right-click → Add to EisenQ ▸ <quadrant> — files it in one click, no panel.
+//   • Right-click → Add to EisenQ ▸ <quadrant> — files it in one click, and
+//     opens the panel to show what was filed.
 // Both save with the capture token this extension received from the app's
 // /connect-extension page. See docs/chrome-extension-capture-design.md.
 
@@ -74,7 +75,12 @@ async function clearBadge(tabId) {
 async function quickCapture(tab, quadrant, selectionFromMenu) {
   const capture = await buildCapture(tab, selectionFromMenu, "selection");
 
+  // The panel opened with the click and is waiting to show how this went.
+  const report = (result) =>
+    chrome.storage.session.set({ [`result:${tab.id}`]: { ...result, at: Date.now() } }).catch(() => undefined);
+
   if (!(await getToken())) {
+    await report({ ok: false });
     await openConnectPage();
     return;
   }
@@ -83,7 +89,8 @@ async function quickCapture(tab, quadrant, selectionFromMenu) {
   // again the next time it opens there. Nothing the user picked is lost.
   const park = async (why) => {
     await chrome.storage.session.set({ [`pending:${tab.id}`]: capture });
-    await setBadge(tab.id, "!", "#dc2626", `${why} Click the EisenQ icon to finish it.`);
+    await setBadge(tab.id, "!", "#dc2626", `${why} Finish it in the EisenQ panel.`);
+    await report({ ok: false }); // the panel then offers the parked capture
   };
 
   if (!capture.title) {
@@ -102,6 +109,7 @@ async function quickCapture(tab, quadrant, selectionFromMenu) {
     if (status === 401) {
       // Revoked in the app, or never valid for this origin. Reconnect.
       await forgetToken();
+      await report({ ok: false });
       await openConnectPage();
       return;
     }
@@ -110,6 +118,7 @@ async function quickCapture(tab, quadrant, selectionFromMenu) {
     const name = QUADRANTS.find((q) => q.id === quadrant)?.name ?? "EisenQ";
     await setBadge(tab.id, "✓", "#16a34a", data.deduped ? "Already in EisenQ" : `Added to ${name}`);
     setTimeout(() => void clearBadge(tab.id), 3000);
+    await report({ ok: true, quadrantName: name, deduped: Boolean(data.deduped), title: capture.title });
   } catch {
     await park("Couldn't reach EisenQ.");
   }
@@ -176,11 +185,18 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 
   const quadrant = info.menuItemId.replace(/^eisenq:/, "");
   if (QUADRANTS.some((q) => q.id === quadrant)) {
+    // Open the panel with the same click, so the result is shown without
+    // another trip to the toolbar. The marker tells a freshly opened panel to
+    // wait for the result instead of reading the page.
+    void chrome.storage.session.set({ [`filing:${tab.id}`]: Date.now() }).catch(() => undefined);
+    openPanel(tab.id);
     void quickCapture(tab, quadrant, info.selectionText);
   }
 });
 
 // A closed tab's parked capture has nowhere to go.
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void chrome.storage.session.remove(`pending:${tabId}`).catch(() => undefined);
+  void chrome.storage.session
+    .remove([`pending:${tabId}`, `filing:${tabId}`, `result:${tabId}`])
+    .catch(() => undefined);
 });

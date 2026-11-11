@@ -47,7 +47,7 @@ extension's **Options**, and connect from there.
 | How | What happens |
 |---|---|
 | Click the icon, or **Alt+Shift+E** | Opens the EisenQ panel beside the page. Again folds it |
-| Right-click → **Add to EisenQ ▸ Do First** (or any quadrant) | Filed in one click, no panel. The icon flashes **✓** |
+| Right-click → **Add to EisenQ ▸ Do First** (or any quadrant) | Filed in one click. The panel opens and shows what was filed |
 | Right-click → **Add to EisenQ ▸ Open panel…** | Opens the panel, reading what you just selected |
 
 **The panel** sits on the right of Chrome, next to the page — never over it, never a new window,
