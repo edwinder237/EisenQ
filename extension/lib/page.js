@@ -6,10 +6,15 @@
 // so no host permissions are needed. Restricted pages (chrome://, the Web Store)
 // can't be read at all; everything here then degrades to the tab's own title.
 
-// A selection shorter than this becomes the task title; anything longer is treated
-// as notes and the page title is used instead. Picking one offer off a page of
-// them is the common case, and that text makes a far better title.
-const TITLE_FROM_SELECTION_MAX = 120;
+// Longest title taken from a selection's first line (right-click capture).
+const SELECTION_TITLE_MAX = 200;
+
+function trimAtWord(s, max) {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return (space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd() + "…";
+}
 
 async function readSelection(tabId) {
   try {
@@ -63,17 +68,30 @@ async function readGmailMessage(tabId) {
   }
 }
 
-export async function buildCapture(tab, selectionFromMenu) {
-  const selection = (selectionFromMenu ?? "").trim() || (await readSelection(tab.id));
+// Where the selection goes depends on the gesture (docs/adr/0001):
+//   mode "page"      — the icon, shortcut or panel: "capture this page". The
+//                      tab's title is the title; the selection goes to notes.
+//   mode "selection" — right-click on selected text: "capture this text". Its
+//                      first line is the title; the whole selection also goes to
+//                      notes when it has more lines or didn't fit.
+export async function buildCapture(tab, selectionFromMenu, mode = "page") {
+  // Read from the page first: unlike the menu's copy, it keeps line breaks.
+  const selection = (await readSelection(tab.id)) || (selectionFromMenu ?? "").trim();
   const threadId = gmailThreadId(tab.url);
   const pageTitle = threadId ? cleanGmailTitle(tab.title ?? "") : (tab.title ?? "").trim();
   const message = threadId ? await readGmailMessage(tab.id) : { body: "", sentAt: "" };
 
-  const useSelectionAsTitle = selection.length > 0 && selection.length <= TITLE_FROM_SELECTION_MAX;
+  let title = pageTitle;
+  let text = selection;
+  if (mode === "selection" && selection) {
+    const firstLine = selection.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+    title = trimAtWord(firstLine, SELECTION_TITLE_MAX);
+    text = selection === title ? "" : selection;
+  }
 
   return {
-    title: useSelectionAsTitle ? selection : pageTitle,
-    text: useSelectionAsTitle ? "" : selection,
+    title,
+    text,
     url: tab.url ?? "",
     pageTitle,
     kind: threadId ? "gmail" : selection ? "selection" : "page",
