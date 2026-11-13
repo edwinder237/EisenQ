@@ -128,6 +128,7 @@ export interface UserSettings {
   financeUserIdEnc?: string; // AES-256-GCM encrypted CashFold user id (sent as ?userId=)
   myndlistApiUrlEnc?: string; // AES-256-GCM encrypted Myndlist API base URL
   myndlistApiKeyEnc?: string; // AES-256-GCM encrypted Myndlist API key
+  anthropicApiKeyEnc?: string; // AES-256-GCM encrypted Anthropic (Claude) API key, for the AI assistant
   // Myndlist has no field for the completion gate, so it is kept here,
   // keyed by Myndlist checklist id. Not a secret, so not encrypted.
   checklistGates?: Record<string, boolean>;

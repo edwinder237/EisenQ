@@ -13,6 +13,7 @@ const updateSettingsSchema = z.object({
   financeUserId: z.string().max(200).optional(),
   myndlistApiUrl: z.string().max(500).optional(),
   myndlistApiKey: z.string().max(200).optional(),
+  anthropicApiKey: z.string().max(300).optional(),
 });
 
 export async function GET() {
@@ -31,6 +32,7 @@ export async function GET() {
     let financeUserId = "";
     let myndlistApiUrl = "";
     let myndlistApiKey = "";
+    let anthropicApiKey = "";
 
     if (doc?.geminiApiKeyEnc) {
       try { geminiApiKey = decrypt(doc.geminiApiKeyEnc); } catch { /* corrupt/rotated key */ }
@@ -53,9 +55,12 @@ export async function GET() {
     if (doc?.myndlistApiKeyEnc) {
       try { myndlistApiKey = decrypt(doc.myndlistApiKeyEnc); } catch { /* corrupt/rotated key */ }
     }
+    if (doc?.anthropicApiKeyEnc) {
+      try { anthropicApiKey = decrypt(doc.anthropicApiKeyEnc); } catch { /* corrupt/rotated key */ }
+    }
 
     return NextResponse.json(
-      { geminiApiKey, icalUrls, autoArchiveCompleted: doc?.autoArchiveCompleted ?? false, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey },
+      { geminiApiKey, icalUrls, autoArchiveCompleted: doc?.autoArchiveCompleted ?? false, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey },
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch {
@@ -79,7 +84,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey } = parsed.data;
+    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey } = parsed.data;
 
     const set: Record<string, unknown> = { updatedAt: new Date() };
     const unset: Record<string, ""> = {};
@@ -114,6 +119,10 @@ export async function PUT(request: NextRequest) {
     if (myndlistApiKey !== undefined) {
       if (myndlistApiKey.trim()) set.myndlistApiKeyEnc = encrypt(myndlistApiKey.trim());
       else unset.myndlistApiKeyEnc = "";
+    }
+    if (anthropicApiKey !== undefined) {
+      if (anthropicApiKey.trim()) set.anthropicApiKeyEnc = encrypt(anthropicApiKey.trim());
+      else unset.anthropicApiKeyEnc = "";
     }
 
     const update: Record<string, unknown> = {
