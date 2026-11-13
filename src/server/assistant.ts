@@ -77,6 +77,7 @@ Guidelines:
 - Prefer removing, deferring or archiving work over adding urgency.
 - Never invent tasks or refs. Only use refs from the latest snapshot.
 - Ground each reason in the data (due dates, age, notes, goals) in one short sentence.
+- In "reply" and "reason", refer to tasks and goals by their titles, never by refs like T4 or G2.
 - If the person only asks a question, answer it and return no suggestions unless they help.
 - Respect what the person tells you about their week or constraints.`;
 
@@ -221,6 +222,12 @@ export async function runAssistant(
     throw new AssistantError("failed", "The assistant returned an unreadable answer. Try again.");
   }
 
+  // Refs are for the model only. Swap any that slip into the text for titles.
+  const humanize = (text: string) =>
+    text
+      .replace(/\bT(\d+)\b/g, (m) => (taskByRef.has(m) ? `"${taskByRef.get(m)!.title}"` : m))
+      .replace(/\bG(\d+)\b/g, (m) => (goalByRef.has(m) ? `"${goalByRef.get(m)!.title}"` : m));
+
   // Keep only suggestions that point at a real task and carry a value the app can apply.
   const suggestions: AssistantSuggestion[] = [];
   parsed.suggestions.forEach((s, i) => {
@@ -233,12 +240,12 @@ export async function runAssistant(
       taskId: String(task._id),
       taskTitle: task.title,
       action: s.action,
-      reason: s.reason,
+      reason: humanize(s.reason),
       ...built,
     });
   });
 
-  return { reply: parsed.reply, suggestions };
+  return { reply: humanize(parsed.reply), suggestions };
 }
 
 function buildSuggestion(
