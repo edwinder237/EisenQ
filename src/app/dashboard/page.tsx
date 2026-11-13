@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, Fragment, type ReactNode } from "react";
 import { isBlankStep, requiredStepsLeft, stepProgress } from "~/lib/checklist-steps";
 import { LinkifiedText } from "~/components/LinkifiedText";
+import { AssistantPanel, type AssistantSuggestion } from "~/components/AssistantPanel";
 import {
   CircleDashed,
   CircleDot,
@@ -41,7 +42,8 @@ import {
   Unlink,
   Link2,
   Info,
-  Archive
+  Archive,
+  Sparkles,
 } from "lucide-react";
 import {
   startOfWeek,
@@ -433,6 +435,7 @@ export default function HomePage() {
   const [calendarView, setCalendarView] = useState<CalendarView>("day");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [isCalendarDrawerOpen, setIsCalendarDrawerOpen] = useState(false);
+  const [isAssistantOpen, setIsAssistantOpen] = useState(false);
   const [isCalendarTaskModalOpen, setIsCalendarTaskModalOpen] = useState(false);
   const [editingCalendarTask, setEditingCalendarTask] = useState<Task | null>(null);
   const [calendarTaskForm, setCalendarTaskForm] = useState({
@@ -3276,6 +3279,75 @@ export default function HomePage() {
 
   // Promote a task to be the quadrant's headline. Pinned explicitly, since
   // scheduled tasks are ordered by date and can't be moved by sortOrder.
+  // Open Settings with every draft reset to the saved values.
+  const openSettings = (section: SettingsSection) => {
+    setSettingsKeyInput(geminiApiKey); setDraftAnthropicKey(anthropicApiKey); setLocationInput(weatherLocation);
+    setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted);
+    setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null);
+    setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null);
+    setSettingsSection(section); void fetchArchivedTasks(); setIsSettingsOpen(true);
+  };
+
+  // Apply one assistant suggestion through the same paths the matrix uses.
+  const handleApplySuggestion = async (s: AssistantSuggestion): Promise<boolean> => {
+    const task = tasks.find(t => t._id === s.taskId);
+    if (!task) {
+      toast.error("That task changed or no longer exists");
+      return false;
+    }
+    if (s.action === "move_to_top") {
+      await handleReorderTask(task, "top");
+      return true;
+    }
+    let body: Record<string, unknown>;
+    switch (s.action) {
+      case "archive":
+        body = { archived: true };
+        break;
+      case "move_quadrant": {
+        const quadrant = s.value as TaskQuadrant;
+        // Same rule as the task form: Do First is always high priority.
+        body = quadrant === "urgent-important" ? { quadrant, priority: "high" } : { quadrant };
+        break;
+      }
+      case "set_priority":
+        body = { priority: s.value };
+        break;
+      case "set_due_date": {
+        // 9:00 local on that day, like the quick-schedule menu.
+        const [y = 0, m = 1, d = 1] = s.value.split("-").map(Number);
+        body = { dueDate: new Date(y, m - 1, d, 9, 0, 0, 0).toISOString() };
+        break;
+      }
+      case "link_goal":
+        body = { goalId: s.value };
+        break;
+      default:
+        return false;
+    }
+    try {
+      const res = await fetch("/api/tasks", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _id: task._id, ...body }),
+      });
+      if (!res.ok) {
+        toast.error("Couldn't apply that suggestion");
+        return false;
+      }
+      if (s.action === "archive") {
+        setTasks(prev => prev.filter(t => t._id !== task._id));
+      } else {
+        const updated = await res.json() as Task;
+        setTasks(prev => prev.map(t => t._id === updated._id ? { ...t, ...updated } : t));
+      }
+      return true;
+    } catch {
+      toast.error("Couldn't apply that suggestion");
+      return false;
+    }
+  };
+
   const handleMakeNextAction = (task: Task) => {
     setNextActionFor(task.quadrant, task._id);
   };
@@ -3570,6 +3642,11 @@ export default function HomePage() {
               )}
             </button>
             <div className="flex gap-1">
+              {anthropicApiKey && (
+                <button className="navbtn" onClick={() => setIsAssistantOpen(true)} title="Assistant">
+                  <Sparkles className="w-[17px] h-[17px]" />
+                </button>
+              )}
               <button className="navbtn" onClick={() => setIsCalendarDrawerOpen(true)} title="Today's calendar">
                 <CalendarDays className="w-[17px] h-[17px]" />
               </button>
@@ -3587,7 +3664,7 @@ export default function HomePage() {
               }} title="Toggle theme">
                 {isDarkMode ? <Sun className="w-[17px] h-[17px]" /> : <Moon className="w-[17px] h-[17px]" />}
               </button>
-              <button className="navbtn" onClick={() => { setSettingsKeyInput(geminiApiKey); setDraftAnthropicKey(anthropicApiKey); setLocationInput(weatherLocation); setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted); setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null); setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null); setSettingsSection("tasks"); void fetchArchivedTasks(); setIsSettingsOpen(true); }} title="Settings">
+              <button className="navbtn" onClick={() => openSettings("tasks")} title="Settings">
                 <Settings className="w-[17px] h-[17px]" />
               </button>
               <UserButton
@@ -3688,6 +3765,13 @@ export default function HomePage() {
       </div>
 
       {/* Calendar Planning Drawer */}
+      <AssistantPanel
+        open={isAssistantOpen}
+        onOpenChange={setIsAssistantOpen}
+        onApply={handleApplySuggestion}
+        onOpenSettings={() => { setIsAssistantOpen(false); openSettings("greeting"); }}
+      />
+
       <Dialog.Root open={isCalendarDrawerOpen} onOpenChange={setIsCalendarDrawerOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 bg-black/50 z-40 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />

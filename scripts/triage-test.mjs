@@ -26,6 +26,38 @@ function decrypt(payload) {
   return Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8");
 }
 
+// Reads a line from the terminal without echoing it.
+function promptHidden(label) {
+  return new Promise((resolve) => {
+    process.stdout.write(label);
+    const stdin = process.stdin;
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    let value = "";
+    // A paste arrives as one chunk, so handle it character by character.
+    const onData = (chunk) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n" || ch === "\u0004") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          resolve(value.trim());
+          return;
+        } else if (ch === "\u0003") {
+          process.exit(130);
+        } else if (ch === "\u007f") {
+          value = value.slice(0, -1);
+        } else {
+          value += ch;
+        }
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
 const QUADRANTS = {
   "urgent-important": "Do First",
   "important-not-urgent": "Schedule",
@@ -59,19 +91,24 @@ try {
   }
 
   const settings = await db.collection("userSettings").findOne({ userId }, { projection: { anthropicApiKeyEnc: 1 } });
-  if (!settings?.anthropicApiKeyEnc) {
-    console.error("No Claude API key saved for this user. Add it in the app: Settings → Claude API key.");
-    process.exit(1);
+  let apiKey = settings?.anthropicApiKeyEnc ? decrypt(settings.anthropicApiKeyEnc) : "";
+  if (!apiKey) {
+    if (!process.stdin.isTTY) {
+      console.error("No Claude API key saved for this user. Add it in the app: Settings → Claude API key.");
+      process.exit(1);
+    }
+    apiKey = await promptHidden("No Claude key saved in Settings. Paste it here (hidden, used once, not stored): ");
+    if (!apiKey) process.exit(1);
   }
-  const apiKey = decrypt(settings.anthropicApiKeyEnc);
 
   const tasks = await db
     .collection("tasks")
     .find({
       userId,
       status: { $ne: "completed" },
-      archivedAt: { $exists: false },
-      parentTaskId: { $exists: false },
+      // Same filter as GET /api/tasks: null matches both missing and explicit null.
+      archivedAt: null,
+      parentTaskId: null,
     })
     .sort({ quadrant: 1, sortOrder: 1 })
     .toArray();
