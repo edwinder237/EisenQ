@@ -451,6 +451,9 @@ export default function HomePage() {
   // Settings state
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [geminiApiKey, setGeminiApiKey] = useState("");
+  // Claude key for the AI assistant (experimental). Server-only use; never cached in localStorage.
+  const [anthropicApiKey, setAnthropicApiKey] = useState("");
+  const [draftAnthropicKey, setDraftAnthropicKey] = useState("");
   const [autoArchiveCompleted, setAutoArchiveCompleted] = useState(false);
   const [draftAutoArchive, setDraftAutoArchive] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("tasks");
@@ -877,7 +880,11 @@ export default function HomePage() {
       try {
         const res = await fetch("/api/settings");
         if (!res.ok) return;
-        const data = (await res.json()) as { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string };
+        const data = (await res.json()) as { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string };
+        if (typeof data.anthropicApiKey === "string") {
+          setAnthropicApiKey(data.anthropicApiKey);
+          setDraftAnthropicKey(data.anthropicApiKey);
+        }
         if (typeof data.geminiApiKey === "string") {
           setGeminiApiKey(data.geminiApiKey);
           if (data.geminiApiKey) safeSetItem("eisenq-gemini-api-key", data.geminiApiKey);
@@ -917,7 +924,7 @@ export default function HomePage() {
 
   // Persist settings to the encrypted DB. localStorage cache is updated by callers
   // for instant reads; this fire-and-forget call keeps the server in sync.
-  const persistSettings = useCallback((partial: { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string }) => {
+  const persistSettings = useCallback((partial: { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string }) => {
     void fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1108,6 +1115,7 @@ export default function HomePage() {
   const settingsDirty =
     locationInput.trim() !== weatherLocation ||
     settingsKeyInput.trim() !== geminiApiKey ||
+    draftAnthropicKey.trim() !== anthropicApiKey ||
     draftIcalUrls.length !== icalUrls.length ||
     draftIcalUrls.some((u, i) => u !== icalUrls[i]) ||
     draftAutoArchive !== autoArchiveCompleted ||
@@ -1136,6 +1144,11 @@ export default function HomePage() {
         persistSettings({ geminiApiKey: "" });
         setClothingSuggestion("");
       }
+    }
+    const aKey = draftAnthropicKey.trim();
+    if (aKey !== anthropicApiKey) {
+      setAnthropicApiKey(aKey);
+      persistSettings({ anthropicApiKey: aKey });
     }
     const urlsChanged =
       draftIcalUrls.length !== icalUrls.length || draftIcalUrls.some((u, i) => u !== icalUrls[i]);
@@ -3574,7 +3587,7 @@ export default function HomePage() {
               }} title="Toggle theme">
                 {isDarkMode ? <Sun className="w-[17px] h-[17px]" /> : <Moon className="w-[17px] h-[17px]" />}
               </button>
-              <button className="navbtn" onClick={() => { setSettingsKeyInput(geminiApiKey); setLocationInput(weatherLocation); setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted); setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null); setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null); setSettingsSection("tasks"); void fetchArchivedTasks(); setIsSettingsOpen(true); }} title="Settings">
+              <button className="navbtn" onClick={() => { setSettingsKeyInput(geminiApiKey); setDraftAnthropicKey(anthropicApiKey); setLocationInput(weatherLocation); setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted); setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null); setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null); setSettingsSection("tasks"); void fetchArchivedTasks(); setIsSettingsOpen(true); }} title="Settings">
                 <Settings className="w-[17px] h-[17px]" />
               </button>
               <UserButton
@@ -6468,6 +6481,33 @@ export default function HomePage() {
                 {settingsKeyInput && (
                   <button
                     onClick={() => setSettingsKeyInput("")}
+                    className="text-[12px] font-medium mt-2"
+                    style={{ color: "var(--tag-fg)" }}
+                  >
+                    Remove key
+                  </button>
+                )}
+              </div>
+
+              {/* Anthropic (Claude) API Key */}
+              <div className="pt-5">
+                <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Claude API key</label>
+                <p className="text-[12px] mb-2" style={{ color: "var(--muted)" }}>
+                  Used by the AI assistant to suggest how to prioritize your tasks (experimental). Create a key at{" "}
+                  <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }} className="hover:underline">console.anthropic.com</a>
+                </p>
+                <input
+                  type="password"
+                  value={draftAnthropicKey}
+                  onChange={(e) => setDraftAnthropicKey(e.target.value)}
+                  placeholder="sk-ant-..."
+                  autoComplete="off"
+                  className="w-full text-[13.5px] rounded-[10px] outline-none"
+                  style={{ padding: "10px 14px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" }}
+                />
+                {draftAnthropicKey && (
+                  <button
+                    onClick={() => setDraftAnthropicKey("")}
                     className="text-[12px] font-medium mt-2"
                     style={{ color: "var(--tag-fg)" }}
                   >
