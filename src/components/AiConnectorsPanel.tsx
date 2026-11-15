@@ -260,7 +260,10 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
     <div>
       <p className="text-[12px] mb-3" style={{ color: "var(--muted)" }}>
         Add EisenQ as a connector in Claude or ChatGPT, then ask in plain words: “add <em>call the accountant</em> to Schedule for Friday”,
-        “what&apos;s my next action?”, “mark the invoice task done”. You choose below what an AI app may do.
+        “what&apos;s my next action?”, “mark the invoice task done”. You choose below what an AI app may do.{" "}
+        <a href="/help/integrations#ai-connectors" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>
+          Full guide
+        </a>
       </p>
 
       {/* 1. Master switch */}

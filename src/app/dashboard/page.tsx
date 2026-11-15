@@ -322,6 +322,13 @@ const SETTINGS_SECTIONS = [
   { id: "ai", label: "AI connectors" },
 ] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
+// Where each Settings tab's "Help" link lands on /help/integrations.
+const SETTINGS_HELP_ANCHOR: Partial<Record<SettingsSection, string>> = {
+  greeting: "gemini",
+  calendar: "calendar",
+  integrations: "cashfold",
+  ai: "ai-connectors",
+};
 
 // "yyyy-MM-dd" → local Date (avoids the UTC shift of new Date("2026-07-28"))
 function parseYmd(s: string): Date {
@@ -6465,9 +6472,17 @@ export default function HomePage() {
           >
             <div className="shrink-0 flex items-center justify-between" style={{ padding: "18px 24px", borderBottom: "1px solid var(--line2)" }}>
               <Dialog.Title style={{ fontFamily: "var(--font-serif)", color: "var(--ink)" }} className="text-[22px]">Settings</Dialog.Title>
+              <div className="flex items-center gap-3">
+              {SETTINGS_HELP_ANCHOR[settingsSection] && (
+                <a href={`/help/integrations#${SETTINGS_HELP_ANCHOR[settingsSection]}`} target="_blank" rel="noopener noreferrer"
+                  className="text-[12.5px] hover:underline" style={{ color: "var(--accent)" }}>
+                  Help
+                </a>
+              )}
               <Dialog.Close asChild>
                 <button className="p-1 text-[20px]" style={{ color: "var(--muted)" }}>✕</button>
               </Dialog.Close>
+              </div>
             </div>
 
             <Dialog.Description className="sr-only">Application settings</Dialog.Description>
