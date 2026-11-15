@@ -3668,7 +3668,6 @@ export default function HomePage() {
                 <Settings className="w-[17px] h-[17px]" />
               </button>
               <UserButton
-                afterSignOutUrl="/sign-in"
                 appearance={{ elements: { avatarBox: "w-[38px] h-[38px] rounded-[11px]" } }}
               />
             </div>
