@@ -1,48 +1,28 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { tasksCollection, goalsCollection } from "~/server/db";
-import type { Task, TaskQuadrant, TaskPriority, TaskStatus } from "~/server/db/schema";
-import { ObjectId } from "mongodb";
+import { tasksCollection } from "~/server/db";
 import { auth } from "@clerk/nextjs/server";
-import { z } from "zod";
-import { requiredStepsLeft } from "~/lib/checklist-steps";
+import {
+  TaskServiceError,
+  createTaskSchema,
+  updateTaskSchema,
+  taskQuadrantSchema,
+  taskPrioritySchema,
+  taskStatusSchema,
+  createTask,
+  updateTask,
+  deleteTask,
+  listMatrixTasks,
+} from "~/server/task-service";
 
-// Escape special regex characters to prevent NoSQL injection
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The rules live in ~/server/task-service, shared with the assistant and AI
+// connectors. This route only authenticates, parses and maps errors.
+
+function errorResponse(err: unknown, fallback: string) {
+  if (err instanceof TaskServiceError) {
+    return NextResponse.json({ error: err.message, ...err.extra }, { status: err.status });
+  }
+  return NextResponse.json({ error: fallback }, { status: 500 });
 }
-
-// Validation schemas
-const taskQuadrantSchema = z.enum(["urgent-important", "important-not-urgent", "urgent-not-important", "not-urgent-not-important"]);
-const taskPrioritySchema = z.enum(["high", "medium", "low"]);
-const taskStatusSchema = z.enum(["pending", "in-progress", "completed"]);
-
-const createTaskSchema = z.object({
-  title: z.string().min(1, "Title is required").max(500, "Title too long"),
-  description: z.string().max(5000, "Description too long").optional(),
-  quadrant: taskQuadrantSchema,
-  priority: taskPrioritySchema,
-  status: taskStatusSchema.optional(),
-  dueDate: z.string().datetime().optional(),
-  duration: z.number().int().min(1).max(1440).optional(),
-  parentTaskId: z.string().optional(),  // For subtask creation
-  goalId: z.string().optional(),        // Optional link to a weekly/monthly goal
-});
-
-const updateTaskSchema = z.object({
-  _id: z.string().min(1, "Task ID is required"),
-  title: z.string().min(1).max(500).optional(),
-  description: z.string().max(5000).optional(),
-  quadrant: taskQuadrantSchema.optional(),
-  priority: taskPrioritySchema.optional(),
-  status: taskStatusSchema.optional(),
-  dueDate: z.string().datetime().nullable().optional(),
-  duration: z.number().int().min(1).max(1440).nullable().optional(),
-  goalId: z.string().nullable().optional(),
-  linkedParentId: z.string().nullable().optional(),
-  archived: z.boolean().optional(),
-  // Sent by the client so the stamp reflects the user's own clock
-  completedAt: z.string().datetime().nullable().optional(),
-});
 
 export async function GET(request: NextRequest) {
   try {
@@ -53,10 +33,6 @@ export async function GET(request: NextRequest) {
     }
 
     const searchParams = request.nextUrl.searchParams;
-    const search = searchParams.get("search");
-    const quadrant = searchParams.get("quadrant");
-    const priority = searchParams.get("priority");
-    const status = searchParams.get("status");
 
     // One-time backfill: tasks completed before completion stamping existed have
     // no completedAt, so they would render without a date forever. Stamp them
@@ -67,77 +43,13 @@ export async function GET(request: NextRequest) {
       { $set: { completedAt: new Date() } }
     );
 
-    // Build match filter for parent tasks only (no parentTaskId)
-    // In MongoDB, { field: null } matches docs where field is null OR doesn't exist
-    const matchFilter: Record<string, unknown> = {
-      userId,
-      parentTaskId: null,
-      archivedAt: null   // archived tasks drop out of the matrix
-    };
-
-    if (search) {
-      const escapedSearch = escapeRegex(search);
-      matchFilter.$or = [
-        { title: { $regex: escapedSearch, $options: "i" } },
-        { description: { $regex: escapedSearch, $options: "i" } }
-      ];
-    }
-
-    // Validate enum values before using
-    if (quadrant && taskQuadrantSchema.safeParse(quadrant).success) {
-      matchFilter.quadrant = quadrant as TaskQuadrant;
-    }
-    if (priority && taskPrioritySchema.safeParse(priority).success) {
-      matchFilter.priority = priority as TaskPriority;
-    }
-    if (status && taskStatusSchema.safeParse(status).success) {
-      matchFilter.status = status as TaskStatus;
-    }
-
-    // Use aggregation to include subtask counts
-    const tasks = await tasksCollection.aggregate([
-      { $match: matchFilter },
-      {
-        $lookup: {
-          from: "tasks",
-          let: { parentId: "$_id", parentUserId: "$userId" },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $and: [
-                    {
-                      $or: [
-                        { $eq: ["$parentTaskId", "$$parentId"] },
-                        { $eq: ["$linkedParentId", "$$parentId"] }
-                      ]
-                    },
-                    { $eq: ["$userId", "$$parentUserId"] }
-                  ]
-                }
-              }
-            },
-            { $project: { status: 1 } }
-          ],
-          as: "subtasks"
-        }
-      },
-      {
-        $addFields: {
-          subtaskCount: { $size: "$subtasks" },
-          subtaskCompletedCount: {
-            $size: {
-              $filter: {
-                input: "$subtasks",
-                cond: { $eq: ["$$this.status", "completed"] }
-              }
-            }
-          }
-        }
-      },
-      { $project: { subtasks: 0 } },
-      { $sort: { createdAt: -1 } }
-    ]).toArray();
+    // Invalid enum values are ignored rather than rejected, as before.
+    const tasks = await listMatrixTasks(userId, {
+      search: searchParams.get("search") ?? undefined,
+      quadrant: taskQuadrantSchema.safeParse(searchParams.get("quadrant")).data,
+      priority: taskPrioritySchema.safeParse(searchParams.get("priority")).data,
+      status: taskStatusSchema.safeParse(searchParams.get("status")).data,
+    });
 
     return NextResponse.json(tasks);
   } catch {
@@ -163,76 +75,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const body = parseResult.data;
-    let quadrant = body.quadrant;
-    let parentTaskId: ObjectId | undefined;
-
-    // Handle subtask creation
-    if (body.parentTaskId) {
-      if (!ObjectId.isValid(body.parentTaskId)) {
-        return NextResponse.json({ error: "Invalid parent task ID" }, { status: 400 });
-      }
-
-      // Verify parent task exists, belongs to user, and is not itself a subtask
-      // Use { field: null } to match docs where field is null OR doesn't exist
-      const parentTask = await tasksCollection.findOne({
-        _id: new ObjectId(body.parentTaskId),
-        userId,
-        parentTaskId: null as unknown as undefined  // Parent must not be a subtask
-      });
-
-      if (!parentTask) {
-        return NextResponse.json(
-          { error: "Parent task not found or is already a subtask" },
-          { status: 400 }
-        );
-      }
-
-      // Inherit quadrant from parent
-      quadrant = parentTask.quadrant;
-      parentTaskId = new ObjectId(body.parentTaskId);
-    }
-
-    // Verify goal ownership when linking to a goal
-    let goalId: ObjectId | undefined;
-    if (body.goalId) {
-      if (!ObjectId.isValid(body.goalId)) {
-        return NextResponse.json({ error: "Invalid goal ID" }, { status: 400 });
-      }
-
-      const goal = await goalsCollection.findOne({
-        _id: new ObjectId(body.goalId),
-        userId,
-      });
-
-      if (!goal) {
-        return NextResponse.json({ error: "Goal not found" }, { status: 400 });
-      }
-
-      goalId = new ObjectId(body.goalId);
-    }
-
-    const newTask: Task = {
-      title: body.title,
-      description: body.description,
-      quadrant,
-      priority: body.priority,
-      status: body.status ?? "pending",
-      dueDate: body.dueDate ? new Date(body.dueDate) : undefined,
-      duration: body.duration,
-      parentTaskId,
-      goalId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      userId,
-    };
-
-    const result = await tasksCollection.insertOne(newTask);
-    const insertedTask = await tasksCollection.findOne({ _id: result.insertedId });
-
-    return NextResponse.json(insertedTask, { status: 201 });
-  } catch {
-    return NextResponse.json({ error: "Failed to create task" }, { status: 500 });
+    const task = await createTask(userId, parseResult.data);
+    return NextResponse.json(task, { status: 201 });
+  } catch (err) {
+    return errorResponse(err, "Failed to create task");
   }
 }
 
@@ -254,143 +100,11 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { _id, dueDate, duration, goalId, linkedParentId, archived, completedAt, ...restUpdateData } = parseResult.data;
-
-    // Validate ObjectId format
-    if (!ObjectId.isValid(_id)) {
-      return NextResponse.json({ error: "Invalid task ID format" }, { status: 400 });
-    }
-
-    // A checklist only gates completion if its template opted in. Enforced here
-    // rather than in the client: a gate the browser alone applies is decorative.
-    // Only required steps count; optional and blank ones never block.
-    // Un-completing is never blocked, or a gated task completed by some other
-    // path would be stuck completed forever.
-    if (restUpdateData.status === "completed") {
-      const existing = await tasksCollection.findOne({ _id: new ObjectId(_id), userId });
-      let remaining = 0;
-      let blockingName = "";
-      for (const checklist of existing?.checklists ?? []) {
-        if (!checklist.blockCompletion) continue;
-        const left = requiredStepsLeft(checklist.steps);
-        if (left > 0) {
-          if (remaining === 0) blockingName = checklist.name;
-          remaining += left;
-        }
-      }
-      if (remaining > 0) {
-        return NextResponse.json(
-          {
-            error: `${remaining} required step${remaining === 1 ? "" : "s"} left on ${blockingName}`,
-            checklistBlocked: true,
-            remaining,
-            checklistName: blockingName,
-          },
-          { status: 400 }
-        );
-      }
-    }
-
-    // Build the update operation with only allowed fields
-    const updateOperation: { $set: Record<string, unknown>; $unset?: Record<string, "" | true | 1> } = {
-      $set: {
-        ...restUpdateData,
-        updatedAt: new Date()
-      }
-    };
-
-    // Handle dueDate - if null, unset it; if string, convert to Date
-    if (dueDate === null) {
-      updateOperation.$unset = { dueDate: "" as const };
-    } else if (dueDate) {
-      updateOperation.$set.dueDate = new Date(dueDate);
-    }
-
-    // Handle duration - if null, unset it; otherwise set it
-    if (duration === null) {
-      updateOperation.$unset = { ...updateOperation.$unset, duration: "" as const };
-    } else if (duration !== undefined) {
-      updateOperation.$set.duration = duration;
-    }
-
-    // Completion stamp. Cleared when a task is reopened.
-    if (completedAt === null) {
-      updateOperation.$unset = { ...updateOperation.$unset, completedAt: "" as const };
-    } else if (completedAt !== undefined) {
-      updateOperation.$set.completedAt = new Date(completedAt);
-    }
-
-    // Archive / restore. Archiving a parent takes its subtasks with it, since
-    // they only exist inside that task.
-    if (archived === true) {
-      updateOperation.$set.archivedAt = new Date();
-    } else if (archived === false) {
-      updateOperation.$unset = { ...updateOperation.$unset, archivedAt: "" as const };
-    }
-
-    // Handle goalId - if null, unset it; if string, verify ownership and set
-    if (goalId === null) {
-      updateOperation.$unset = { ...updateOperation.$unset, goalId: "" as const };
-    } else if (goalId !== undefined) {
-      if (!ObjectId.isValid(goalId)) {
-        return NextResponse.json({ error: "Invalid goal ID" }, { status: 400 });
-      }
-
-      const goal = await goalsCollection.findOne({ _id: new ObjectId(goalId), userId });
-
-      if (!goal) {
-        return NextResponse.json({ error: "Goal not found" }, { status: 400 });
-      }
-
-      updateOperation.$set.goalId = new ObjectId(goalId);
-    }
-
-    // Handle linkedParentId - soft link to a parent task's subtask list. The task
-    // stays top-level in the matrix; if null, unlink.
-    if (linkedParentId === null) {
-      updateOperation.$unset = { ...updateOperation.$unset, linkedParentId: "" as const };
-    } else if (linkedParentId !== undefined) {
-      if (!ObjectId.isValid(linkedParentId) || linkedParentId === _id) {
-        return NextResponse.json({ error: "Invalid parent task" }, { status: 400 });
-      }
-      // The link target must be one of the user's own top-level tasks, and must
-      // not itself be linked under this task (prevents a 2-way loop).
-      const parent = await tasksCollection.findOne({
-        _id: new ObjectId(linkedParentId),
-        userId,
-        parentTaskId: null as unknown as undefined,
-      });
-      if (!parent) {
-        return NextResponse.json({ error: "Parent task not found or is a subtask" }, { status: 400 });
-      }
-      if (parent.linkedParentId?.equals(new ObjectId(_id))) {
-        return NextResponse.json({ error: "That task is already linked under this one" }, { status: 400 });
-      }
-      updateOperation.$set.linkedParentId = new ObjectId(linkedParentId);
-    }
-
-    const result = await tasksCollection.updateOne(
-      { _id: new ObjectId(_id), userId },
-      updateOperation
-    );
-
-    if (result.matchedCount === 0) {
-      return NextResponse.json({ error: "Task not found" }, { status: 404 });
-    }
-
-    // If quadrant changed on a parent task, cascade to all subtasks
-    if (restUpdateData.quadrant) {
-      await tasksCollection.updateMany(
-        { parentTaskId: new ObjectId(_id), userId },
-        { $set: { quadrant: restUpdateData.quadrant, updatedAt: new Date() } }
-      );
-    }
-
-    // IDOR fix: Include userId in findOne query
-    const updatedTask = await tasksCollection.findOne({ _id: new ObjectId(_id), userId });
-    return NextResponse.json(updatedTask);
-  } catch {
-    return NextResponse.json({ error: "Failed to update task" }, { status: 500 });
+    const { _id, ...changes } = parseResult.data;
+    const task = await updateTask(userId, _id, changes);
+    return NextResponse.json(task);
+  } catch (err) {
+    return errorResponse(err, "Failed to update task");
   }
 }
 
@@ -402,39 +116,14 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const searchParams = request.nextUrl.searchParams;
-    const id = searchParams.get("id");
-
+    const id = request.nextUrl.searchParams.get("id");
     if (!id) {
       return NextResponse.json({ error: "Task ID is required" }, { status: 400 });
     }
 
-    // Validate ObjectId format
-    if (!ObjectId.isValid(id)) {
-      return NextResponse.json({ error: "Invalid task ID format" }, { status: 400 });
-    }
-
-    // First, delete all real subtasks of this task (cascade delete)
-    await tasksCollection.deleteMany({
-      parentTaskId: new ObjectId(id),
-      userId
-    });
-
-    // Soft-linked tasks are independent top-level tasks — unlink them, don't delete.
-    await tasksCollection.updateMany(
-      { linkedParentId: new ObjectId(id), userId },
-      { $unset: { linkedParentId: "" }, $set: { updatedAt: new Date() } }
-    );
-
-    // Then delete the task itself
-    const result = await tasksCollection.deleteOne({ _id: new ObjectId(id), userId });
-
-    if (result.deletedCount === 0) {
-      return NextResponse.json({ error: "Task not found" }, { status: 404 });
-    }
-
+    await deleteTask(userId, id);
     return NextResponse.json({ message: "Task deleted successfully" });
-  } catch {
-    return NextResponse.json({ error: "Failed to delete task" }, { status: 500 });
+  } catch (err) {
+    return errorResponse(err, "Failed to delete task");
   }
 }

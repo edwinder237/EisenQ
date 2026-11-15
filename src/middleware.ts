@@ -21,6 +21,12 @@ const isPublicRoute = createRouteMatcher([
   // Same reason: the side panel calls this with its token. The handler accepts
   // a Clerk session or a valid token, and rejects everything else.
   "/api/capture/deadline",
+  // AI connectors (MCP). Same reason again: Claude and ChatGPT send an OAuth
+  // bearer token, not the Clerk cookie, and the handler verifies it (audience
+  // included) itself. Exact path — /api/mcp/clients must stay Clerk-protected.
+  "/api/mcp",
+  // RFC 9728 metadata telling those apps where to sign in. Public by design.
+  "/.well-known/oauth-protected-resource(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

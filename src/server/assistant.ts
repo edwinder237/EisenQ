@@ -1,8 +1,9 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ObjectId } from "mongodb";
-import { tasksCollection, goalsCollection, userSettingsCollection } from "~/server/db";
+import { userSettingsCollection } from "~/server/db";
 import type { TaskQuadrant, TaskPriority } from "~/server/db/schema";
 import { decrypt } from "~/server/crypto";
+import { QUADRANT_NAMES, QUADRANT_BY_NAME, loadOpenTasksAndGoals } from "~/server/task-service";
 
 // The AI prioritization assistant: reads the user's open tasks and goals, asks
 // Claude for a reply plus a few atomic changes, and returns those changes as
@@ -43,18 +44,15 @@ export class AssistantError extends Error {
   }
 }
 
-const QUADRANT_NAMES: Record<TaskQuadrant, string> = {
-  "urgent-important": "Do First",
-  "important-not-urgent": "Schedule",
-  "urgent-not-important": "Delegate",
-  "not-urgent-not-important": "Eliminate",
-};
-const QUADRANT_BY_NAME = Object.fromEntries(
-  Object.entries(QUADRANT_NAMES).map(([k, v]) => [v, k as TaskQuadrant]),
-) as Record<string, TaskQuadrant>;
 const PRIORITIES: TaskPriority[] = ["high", "medium", "low"];
 
 const MODEL = "claude-opus-5-5";
+
+// Shared with the AI connectors' prioritize_my_matrix prompt, so an outside AI
+// is coached the same way as the built-in assistant.
+export const PRIORITIZATION_GUIDELINES = `- Prefer removing, deferring or archiving work over adding urgency.
+- Ground each reason in the data (due dates, age, notes, goals) in one short sentence.
+- Respect what the person tells you about their week or constraints.`;
 
 // Stable across requests so it can be cached.
 const SYSTEM_PROMPT = `You are the prioritization assistant inside EisenQ, an Eisenhower-matrix task manager
@@ -74,12 +72,10 @@ Each suggestion is one atomic change the app can apply to a single task:
 
 Guidelines:
 - Suggest at most 7 changes, fewer when the matrix is in good shape. Only suggest what you would actually do.
-- Prefer removing, deferring or archiving work over adding urgency.
+${PRIORITIZATION_GUIDELINES}
 - Never invent tasks or refs. Only use refs from the latest snapshot.
-- Ground each reason in the data (due dates, age, notes, goals) in one short sentence.
 - In "reply" and "reason", refer to tasks and goals by their titles, never by refs like T4 or G2.
-- If the person only asks a question, answer it and return no suggestions unless they help.
-- Respect what the person tells you about their week or constraints.`;
+- If the person only asks a question, answer it and return no suggestions unless they help.`;
 
 const OUTPUT_SCHEMA = {
   type: "object",
@@ -139,19 +135,7 @@ export async function runAssistant(
   const apiKey = await loadApiKey(userId);
 
   // Same filter as the matrix (GET /api/tasks): top-level, open, not archived.
-  const [tasks, goals] = await Promise.all([
-    tasksCollection
-      .find({
-        userId,
-        status: { $ne: "completed" },
-        archivedAt: null as unknown as undefined,
-        parentTaskId: null as unknown as undefined,
-      })
-      .sort({ quadrant: 1, sortOrder: 1 })
-      .limit(300)
-      .toArray(),
-    goalsCollection.find({ userId, status: "active" }).toArray(),
-  ]);
+  const [tasks, goals] = await loadOpenTasksAndGoals(userId);
 
   const taskByRef = new Map(tasks.map((t, i) => [`T${i + 1}`, t]));
   const goalByRef = new Map(goals.map((g, i) => [`G${i + 1}`, g]));

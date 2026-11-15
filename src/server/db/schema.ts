@@ -4,14 +4,14 @@ export type TaskQuadrant = "urgent-important" | "important-not-urgent" | "urgent
 export type TaskPriority = "high" | "medium" | "low";
 export type TaskStatus = "pending" | "in-progress" | "completed";
 
-// Where a task came from, when it was filed by the browser capture extension
-// rather than typed into the app. Absent on hand-made tasks.
-export type TaskSourceKind = "gmail" | "page" | "selection";
+// Where a task came from, when it was filed by the browser capture extension or
+// by an AI connector rather than typed into the app. Absent on hand-made tasks.
+export type TaskSourceKind = "gmail" | "page" | "selection" | "agent";
 
 export interface TaskSource {
   kind: TaskSourceKind;
-  url: string;              // thread permalink or page URL; the link back
-  title?: string;           // page title or email subject, as captured
+  url?: string;             // thread permalink or page URL; the link back. Captures only, never agents.
+  title?: string;           // page title or email subject; for "agent", the AI app's name
   from?: string;            // sender, when the capture knew one
   // A per-item id such as a Gmail thread id. The ONLY safe dedupe key: a page
   // URL is not one, because an offers page or a newsletter holds many separately
@@ -135,8 +135,56 @@ export interface UserSettings {
   // One entry per browser connected through /connect-extension. An array so that
   // connecting a second browser doesn't silently disconnect the first.
   captureTokens?: CaptureToken[];
+  // AI connectors (MCP). Absent until the user first saves the AI connectors
+  // tab; readers fill in defaults with normalizeMcpSettings().
+  mcp?: McpSettings;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface McpPermissions {
+  readTasks: boolean;
+  createTasks: boolean;
+  editTasks: boolean;      // rename, reschedule, move quadrant, priority, goal link
+  completeTasks: boolean;
+  deleteTasks: boolean;
+  readGoals: boolean;
+  editGoals: boolean;      // create, rename, move to another period
+}
+
+export interface McpPreferences {
+  defaultQuadrant: TaskQuadrant;     // used when the AI doesn't name one
+  deleteMode: "archive" | "delete";  // archive keeps it recoverable
+  labelAiTasks: boolean;             // stamp source.kind "agent" so the editor can show "via Claude"
+  shareCompleted: boolean;           // let the AI see completed tasks when it lists them
+  dailyWriteLimit: number;           // guard against a runaway agent
+  timeZone: string;                  // IANA zone from the browser, for "due Friday" → 9:00 local
+}
+
+export interface McpClient {
+  clientId: string;        // OAuth client id from the verified token
+  name: string;            // best name we know: the MCP client's own name, else the id
+  firstSeenAt: Date;
+  lastUsedAt: Date;
+  blocked: boolean;        // revoked in Settings; every call from it is refused
+}
+
+export interface McpActivity {
+  at: Date;
+  clientId: string;
+  clientName: string;
+  tool: string;
+  summary: string;         // "Added “Call the accountant” to Schedule"
+  taskId?: string;
+}
+
+export interface McpSettings {
+  enabled: boolean;
+  permissions: McpPermissions;
+  preferences: McpPreferences;
+  clients: McpClient[];
+  activity: McpActivity[];                  // newest first, capped
+  writes?: { day: string; count: number };  // daily write counter, day in the user's zone
 }
 
 export interface CaptureToken {
