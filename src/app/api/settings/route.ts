@@ -3,6 +3,7 @@ import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
 import { userSettingsCollection } from "~/server/db";
 import { encrypt, decrypt } from "~/server/crypto";
+import { mcpSettingsUpdateSchema, mcpUpdateToSet, normalizeMcpSettings } from "~/server/mcp-settings";
 
 const updateSettingsSchema = z.object({
   geminiApiKey: z.string().max(200).optional(),
@@ -14,6 +15,7 @@ const updateSettingsSchema = z.object({
   myndlistApiUrl: z.string().max(500).optional(),
   myndlistApiKey: z.string().max(200).optional(),
   anthropicApiKey: z.string().max(300).optional(),
+  mcp: mcpSettingsUpdateSchema.optional(),
 });
 
 export async function GET() {
@@ -60,7 +62,11 @@ export async function GET() {
     }
 
     return NextResponse.json(
-      { geminiApiKey, icalUrls, autoArchiveCompleted: doc?.autoArchiveCompleted ?? false, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey },
+      {
+        geminiApiKey, icalUrls, autoArchiveCompleted: doc?.autoArchiveCompleted ?? false, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey,
+        // The daily counter is internal; everything else feeds the AI connectors tab.
+        mcp: (({ writes: _writes, ...rest }) => rest)(normalizeMcpSettings(doc?.mcp)),
+      },
       { headers: { "Cache-Control": "no-store" } }
     );
   } catch {
@@ -84,7 +90,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey } = parsed.data;
+    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey, mcp } = parsed.data;
 
     const set: Record<string, unknown> = { updatedAt: new Date() };
     const unset: Record<string, ""> = {};
@@ -124,6 +130,9 @@ export async function PUT(request: NextRequest) {
       if (anthropicApiKey.trim()) set.anthropicApiKeyEnc = encrypt(anthropicApiKey.trim());
       else unset.anthropicApiKeyEnc = "";
     }
+
+    // Dot paths, so saving the tab never touches connected apps or the log.
+    if (mcp) Object.assign(set, mcpUpdateToSet(mcp));
 
     const update: Record<string, unknown> = {
       $set: set,

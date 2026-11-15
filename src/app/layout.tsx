@@ -67,7 +67,8 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <ClerkProvider>
+    // Clerk 7 moved afterSignOutUrl off <UserButton> and onto the provider.
+    <ClerkProvider afterSignOutUrl="/sign-in">
       <html lang="en" className={`${inter.variable} ${newsreader.variable}`}>
         <body className="bg-gray-950 text-white font-sans">
           {children}

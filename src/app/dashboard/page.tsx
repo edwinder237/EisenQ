@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, Fragment, type React
 import { isBlankStep, requiredStepsLeft, stepProgress } from "~/lib/checklist-steps";
 import { LinkifiedText } from "~/components/LinkifiedText";
 import { AssistantPanel, type AssistantSuggestion } from "~/components/AssistantPanel";
+import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import {
   CircleDashed,
   CircleDot,
@@ -115,6 +116,8 @@ interface Task {
   subtaskCount?: number;
   subtaskCompletedCount?: number;
   checklists?: TaskChecklist[];
+  // Set by the capture extension, or by an AI connector ("agent", title = app name)
+  source?: { kind: "gmail" | "page" | "selection" | "agent"; title?: string; url?: string };
 }
 
 // A reusable checklist copied onto a task. Distinct from ChecklistItem below,
@@ -316,8 +319,16 @@ const SETTINGS_SECTIONS = [
   { id: "greeting", label: "Greeting" },
   { id: "calendar", label: "Calendar" },
   { id: "integrations", label: "Integrations" },
+  { id: "ai", label: "AI connectors" },
 ] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
+// Where each Settings tab's "Help" link lands on /help/integrations.
+const SETTINGS_HELP_ANCHOR: Partial<Record<SettingsSection, string>> = {
+  greeting: "gemini",
+  calendar: "calendar",
+  integrations: "cashfold",
+  ai: "ai-connectors",
+};
 
 // "yyyy-MM-dd" → local Date (avoids the UTC shift of new Date("2026-07-28"))
 function parseYmd(s: string): Date {
@@ -459,6 +470,9 @@ export default function HomePage() {
   const [draftAnthropicKey, setDraftAnthropicKey] = useState("");
   const [autoArchiveCompleted, setAutoArchiveCompleted] = useState(false);
   const [draftAutoArchive, setDraftAutoArchive] = useState(false);
+  // AI connectors (MCP): applied config from the server, and the Settings draft.
+  const [mcpConfig, setMcpConfig] = useState<McpConfigDraft>(DEFAULT_MCP_CONFIG);
+  const [draftMcp, setDraftMcp] = useState<McpConfigDraft>(DEFAULT_MCP_CONFIG);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("tasks");
   const [financeApiUrl, setFinanceApiUrl] = useState("");
   const [financeApiKey, setFinanceApiKey] = useState("");
@@ -883,7 +897,12 @@ export default function HomePage() {
       try {
         const res = await fetch("/api/settings");
         if (!res.ok) return;
-        const data = (await res.json()) as { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string };
+        const data = (await res.json()) as { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string; mcp?: unknown };
+        if (data.mcp) {
+          const mcp = mcpConfigFrom(data.mcp);
+          setMcpConfig(mcp);
+          setDraftMcp(mcp);
+        }
         if (typeof data.anthropicApiKey === "string") {
           setAnthropicApiKey(data.anthropicApiKey);
           setDraftAnthropicKey(data.anthropicApiKey);
@@ -927,7 +946,7 @@ export default function HomePage() {
 
   // Persist settings to the encrypted DB. localStorage cache is updated by callers
   // for instant reads; this fire-and-forget call keeps the server in sync.
-  const persistSettings = useCallback((partial: { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string }) => {
+  const persistSettings = useCallback((partial: { geminiApiKey?: string; icalUrls?: string[]; autoArchiveCompleted?: boolean; financeApiUrl?: string; financeApiKey?: string; financeUserId?: string; myndlistApiUrl?: string; myndlistApiKey?: string; anthropicApiKey?: string; mcp?: McpConfigDraft & { preferences: { timeZone?: string } } }) => {
     void fetch("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -1126,7 +1145,8 @@ export default function HomePage() {
     draftFinanceKey.trim() !== financeApiKey ||
     draftMyndlistUrl.trim() !== myndlistApiUrl ||
     draftMyndlistKey.trim() !== myndlistApiKey ||
-    draftFinanceUserId.trim() !== financeUserId;
+    draftFinanceUserId.trim() !== financeUserId ||
+    !mcpConfigEqual(draftMcp, mcpConfig);
 
   // Apply all staged Settings drafts at once
   const handleSaveSettings = () => {
@@ -1185,6 +1205,12 @@ export default function HomePage() {
       // The library is fetched lazily, so just drop the cache; the next open refetches.
       setMyndlistTemplates([]);
       setMyndlistFetchedAt(0);
+    }
+    if (!mcpConfigEqual(draftMcp, mcpConfig)) {
+      setMcpConfig(draftMcp);
+      // The browser's zone rides along, so "due Friday" from an AI app means
+      // 9:00 on this person's Friday.
+      persistSettings({ mcp: { ...draftMcp, preferences: { ...draftMcp.preferences, timeZone: browserTimeZone() } } });
     }
     setSettingsIcalInput("");
     setSettingsIcalError("");
@@ -3285,6 +3311,7 @@ export default function HomePage() {
     setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted);
     setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null);
     setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null);
+    setDraftMcp(mcpConfig);
     setSettingsSection(section); void fetchArchivedTasks(); setIsSettingsOpen(true);
   };
 
@@ -3299,37 +3326,19 @@ export default function HomePage() {
       await handleReorderTask(task, "top");
       return true;
     }
-    let body: Record<string, unknown>;
-    switch (s.action) {
-      case "archive":
-        body = { archived: true };
-        break;
-      case "move_quadrant": {
-        const quadrant = s.value as TaskQuadrant;
-        // Same rule as the task form: Do First is always high priority.
-        body = quadrant === "urgent-important" ? { quadrant, priority: "high" } : { quadrant };
-        break;
-      }
-      case "set_priority":
-        body = { priority: s.value };
-        break;
-      case "set_due_date": {
-        // 9:00 local on that day, like the quick-schedule menu.
-        const [y = 0, m = 1, d = 1] = s.value.split("-").map(Number);
-        body = { dueDate: new Date(y, m - 1, d, 9, 0, 0, 0).toISOString() };
-        break;
-      }
-      case "link_goal":
-        body = { goalId: s.value };
-        break;
-      default:
-        return false;
-    }
+    // Everything else is applied by the server, through the same task rules as
+    // the matrix and AI connectors (Do First ⇒ high, goal checks, due dates at
+    // 9:00 in this browser's zone).
     try {
-      const res = await fetch("/api/tasks", {
-        method: "PUT",
+      const res = await fetch("/api/assistant/apply", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _id: task._id, ...body }),
+        body: JSON.stringify({
+          taskId: task._id,
+          action: s.action,
+          value: s.value,
+          timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }),
       });
       if (!res.ok) {
         toast.error("Couldn't apply that suggestion");
@@ -3668,7 +3677,6 @@ export default function HomePage() {
                 <Settings className="w-[17px] h-[17px]" />
               </button>
               <UserButton
-                afterSignOutUrl="/sign-in"
                 appearance={{ elements: { avatarBox: "w-[38px] h-[38px] rounded-[11px]" } }}
               />
             </div>
@@ -5767,6 +5775,9 @@ export default function HomePage() {
             <div className="flex items-center justify-between shrink-0" style={{ padding: "15px 22px", borderBottom: "1px solid var(--line2)", background: "var(--form-bg)" }}>
               <span className="text-[11px] tracking-[0.14em] uppercase" style={{ color: "var(--muted5)" }}>
                 {editingTask ? "Edit task" : "New task"}
+                {editingTask?.source?.kind === "agent" && mcpConfig.preferences.labelAiTasks && (
+                  <span className="normal-case tracking-normal" title="Added through an AI connector"> · via {editingTask.source.title ?? "an AI app"}</span>
+                )}
               </span>
               <div className="flex items-center gap-1">
                 {formData.dueDate && (
@@ -6461,9 +6472,17 @@ export default function HomePage() {
           >
             <div className="shrink-0 flex items-center justify-between" style={{ padding: "18px 24px", borderBottom: "1px solid var(--line2)" }}>
               <Dialog.Title style={{ fontFamily: "var(--font-serif)", color: "var(--ink)" }} className="text-[22px]">Settings</Dialog.Title>
+              <div className="flex items-center gap-3">
+              {SETTINGS_HELP_ANCHOR[settingsSection] && (
+                <a href={`/help/integrations#${SETTINGS_HELP_ANCHOR[settingsSection]}`} target="_blank" rel="noopener noreferrer"
+                  className="text-[12.5px] hover:underline" style={{ color: "var(--accent)" }}>
+                  Help
+                </a>
+              )}
               <Dialog.Close asChild>
                 <button className="p-1 text-[20px]" style={{ color: "var(--muted)" }}>✕</button>
               </Dialog.Close>
+              </div>
             </div>
 
             <Dialog.Description className="sr-only">Application settings</Dialog.Description>
@@ -6802,6 +6821,10 @@ export default function HomePage() {
                   )}
                 </div>
               </div>
+              )}
+
+              {settingsSection === "ai" && (
+                <AiConnectorsPanel draft={draftMcp} onChange={setDraftMcp} savedEnabled={mcpConfig.enabled} />
               )}
               </div>
             </div>
