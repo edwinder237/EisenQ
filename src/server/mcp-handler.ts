@@ -2,6 +2,7 @@ import type { AuthInfo } from "@modelcontextprotocol/server";
 import { CLIENT_INFO_META_KEY, createMcpHandler } from "@modelcontextprotocol/server";
 import { buildMcpServer, type McpCallContext } from "~/server/mcp-server";
 import { MCP_METADATA_URL, loadMcpSettings, touchClient } from "~/server/mcp-settings";
+import { friendlyAppName } from "~/lib/task-source";
 
 // Everything /api/mcp does once the bearer token is verified: the master
 // switch, revoked apps, client tracking, and a server built for exactly what
@@ -42,22 +43,31 @@ const KNOWN_APPS: [RegExp, string][] = [
  * this request, else the host of its client-metadata URL, else nothing.
  */
 async function clientNameFrom(req: Request, clientId: string): Promise<string | undefined> {
+  // The client-metadata URL's host is the most reliable signal (claude.ai →
+  // Claude); the name a client reports about itself ("Anthropic/Toolbox") is
+  // only a fallback, and is cleaned up the same way the dashboard shows it.
+  try {
+    const host = new URL(clientId).hostname;
+    const known = KNOWN_APPS.find(([re]) => re.test(host))?.[1];
+    if (known) return known;
+  } catch {
+    /* an opaque client id, not a metadata URL */
+  }
   if (req.method === "POST") {
     try {
       const body = (await req.clone().json()) as {
         params?: { clientInfo?: { name?: unknown }; _meta?: Record<string, { name?: unknown } | undefined> };
       };
       const name = body.params?._meta?.[CLIENT_INFO_META_KEY]?.name ?? body.params?.clientInfo?.name;
-      if (typeof name === "string" && name.trim()) return name.trim().slice(0, 60);
+      if (typeof name === "string" && name.trim()) return friendlyAppName(name.slice(0, 60));
     } catch {
       /* not JSON, or a batch; fall through */
     }
   }
   try {
-    const host = new URL(clientId).hostname;
-    return KNOWN_APPS.find(([re]) => re.test(host))?.[1] ?? host;
+    return new URL(clientId).hostname;
   } catch {
-    return undefined; // an opaque client id, not a metadata URL
+    return undefined;
   }
 }
 
