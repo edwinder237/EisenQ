@@ -5,6 +5,11 @@ import { isBlankStep, requiredStepsLeft, stepProgress } from "~/lib/checklist-st
 import { LinkifiedText } from "~/components/LinkifiedText";
 import { AssistantPanel, type AssistantSuggestion } from "~/components/AssistantPanel";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
+import { DelegateQuadrant } from "~/components/DelegateQuadrant";
+
+// UI-only prototype of the Delegate quadrant (hand-offs live in localStorage).
+// Set to false to bring back the classic quadrant card.
+const DELEGATE_PROTOTYPE = true;
 import {
   CircleDashed,
   CircleDot,
@@ -4791,6 +4796,25 @@ export default function HomePage() {
               const meta = MATRIX_META[quadrant];
               const { nextAction, upNext, cleared } = getQuadrantView(quadrant);
               const quickVal = quickTaskInputs[quadrant];
+              if (DELEGATE_PROTOTYPE && quadrant === "urgent-not-important") {
+                const findTask = (id: string) => tasks.find(t => t._id === id);
+                return (
+                  <DelegateQuadrant
+                    key={quadrant}
+                    tasks={getOrderedQuadrantTasks(quadrant).filter(t => t.status !== "completed")}
+                    meta={meta}
+                    quickValue={quickVal}
+                    onQuickChange={(value) => setQuickTaskInputs(prev => ({ ...prev, [quadrant]: value }))}
+                    onQuickAdd={() => void handleQuickAddTask(quadrant, quickVal)}
+                    onOpenTask={(id) => { const t = findTask(id); if (t) void openTaskForEdit(t); }}
+                    onToggleStep={(taskId, checklistId, stepId) => {
+                      const checklist = findTask(taskId)?.checklists?.find(c => c.id === checklistId);
+                      if (checklist) handleToggleChecklistStep(taskId, checklist, stepId);
+                    }}
+                    onCompleteTask={(id) => { const t = findTask(id); if (t) void handleToggleComplete(t); }}
+                  />
+                );
+              }
               return (
                 <div key={quadrant} className="rounded-2xl overflow-hidden flex flex-col min-h-[300px]"
                   style={{ background: "var(--surface)", border: "1px solid var(--surface-bd)", boxShadow: "0 14px 34px -20px rgba(70,55,30,0.45)" }}>
