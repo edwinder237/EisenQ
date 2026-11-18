@@ -1,9 +1,10 @@
-// Delegate quadrant PROTOTYPE — UI only.
+// Delegate quadrant relay logic.
 //
-// Who a task is handed to, and who owns each checklist step, live in this
-// browser's localStorage, not in the database. The household is a fixed set of
-// sample helpers until real household accounts exist. Ticking a step still goes
-// through the normal checklist API, because those steps are real.
+// Hand-offs to the Assistant are real: they're saved on the task and fire the
+// person's Claude routine (see delegationFromRun). Hand-offs to household
+// members are still a prototype, kept in this browser's localStorage, because
+// household accounts don't exist yet; Sam and Noor are placeholders. Ticking a
+// step always goes through the normal checklist API.
 //
 // The relay is the task's checklist read in order: one chip per required step,
 // owned by whoever the step was handed to. Optional steps stay out of it (they
@@ -72,6 +73,33 @@ export interface RelayTask {
   dueDate?: string;
   status: string;
   checklists?: RelayChecklist[];
+  assistantRun?: AssistantRunView | null;
+}
+
+/** A real hand-off to the Assistant, saved on the task (see ~/server/assistant-routine). */
+export interface AssistantRunView {
+  mode: HandOffMode;
+  stepOwners: Record<string, Who>;
+  status: "working" | "done" | "blocked";
+  requestedAt: string;
+  sessionUrl?: string;
+  finishedAt?: string;
+  result?: string;
+}
+
+/**
+ * The relay for a task handed to the Assistant, from what the server saved.
+ * "done" in outcome mode means it's back with you to check; "blocked" reads as
+ * the Assistant passing its current step back to you.
+ */
+export function delegationFromRun(task: RelayTask, run: AssistantRunView): Delegation {
+  const d: Delegation = { to: "assistant", mode: run.mode, stepOwners: run.stepOwners, at: run.requestedAt };
+  if (run.status === "done") d.outcomeDone = true;
+  if (run.status === "blocked") {
+    const stuck = relaySteps(task).find(({ step }) => !step.done && (run.stepOwners[step.id] ?? "assistant") === "assistant");
+    d.passed = { label: stuck?.step.text.trim() ?? task.title, by: "assistant" };
+  }
+  return d;
 }
 
 export type ChipState = "done" | "now" | "later" | "passed";

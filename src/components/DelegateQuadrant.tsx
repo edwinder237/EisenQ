@@ -1,15 +1,19 @@
 "use client";
 
-// PROTOTYPE of the Delegate quadrant. Closed, it reads like the other three
-// quadrants (a "Next action" headline over an "Up next" list); tapping a task
-// opens its hand-off panel: who has it, the relay of step chips, and actions.
-// Hand-offs and step owners are kept in localStorage only (see
-// ~/lib/delegate-prototype); nothing new reaches the server.
+// The Delegate quadrant. Closed, it reads like the other three quadrants (a
+// "Next action" headline over an "Up next" list); tapping a task opens its
+// hand-off panel: who has it, the relay of step chips, and actions.
+//
+// Handing a task to Assistant is real: it fires the person's Claude Code
+// routine (see ~/server/assistant-routine), which reports back through the
+// EisenQ connector; this card polls while it works. Handing to a household
+// member is still a prototype kept in localStorage (~/lib/delegate-prototype).
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { format, startOfDay } from "date-fns";
-import { Check, ChevronDown, ChevronRight, FlaskConical, Sparkles } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, ExternalLink, FlaskConical, Loader2, Sparkles } from "lucide-react";
+import { LinkifiedText } from "~/components/LinkifiedText";
 import toast from "react-hot-toast";
 import { cn } from "~/lib/utils";
 import {
@@ -17,6 +21,7 @@ import {
   SAMPLE_PREFIX,
   buildRelay,
   currentChip,
+  delegationFromRun,
   helper,
   latestLine,
   loadDelegations,
@@ -24,6 +29,7 @@ import {
   relaySteps,
   sampleData,
   saveDelegations,
+  type AssistantRunView,
   type Delegation,
   type Delegations,
   type HandOffMode,
@@ -46,7 +52,11 @@ interface Props {
   onOpenTask: (taskId: string) => void;
   onToggleStep: (taskId: string, checklistId: string, stepId: string) => void;
   onCompleteTask: (taskId: string) => void;
+  /** Merge server changes to a task (its Assistant hand-off, its checklists) into the dashboard. */
+  onTaskPatch: (taskId: string, patch: Partial<RelayTask>) => void;
 }
+
+interface RoutineStatus { connected: boolean; triggerId?: string }
 
 interface Item {
   task: RelayTask;
@@ -54,6 +64,8 @@ interface Item {
   chips: RelayChip[];
   /** Who holds it right now: "you" when it waits on you, undefined when no one has it. */
   holder?: Who;
+  /** Set when the task is really handed to the Assistant (not a prototype hand-off). */
+  run?: AssistantRunView;
 }
 
 export function DelegateQuadrant(props: Props) {
@@ -61,9 +73,55 @@ export function DelegateQuadrant(props: Props) {
   const [delegations, setDelegations] = useState<Delegations>({});
   const [openId, setOpenId] = useState<string | null>(null);
   const [samples, setSamples] = useState<RelayTask[] | null>(null);
+  const [routine, setRoutine] = useState<RoutineStatus | null>(null);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  // A hand-off waiting on the routine being connected, fired right after it is.
+  const pendingRef = useRef<{ taskId: string; mode: HandOffMode } | null>(null);
 
   // Read after mount: the dashboard is server-rendered first, where there is no storage.
   useEffect(() => setDelegations(loadDelegations()), []);
+
+  useEffect(() => {
+    fetch("/api/settings/assistant-routine")
+      .then((r) => (r.ok ? (r.json() as Promise<RoutineStatus>) : null))
+      .then((s) => s && setRoutine(s))
+      .catch(() => undefined);
+  }, []);
+
+  // Latest props for the polling loop, so it needn't restart on every render.
+  const latest = useRef(props);
+  latest.current = props;
+
+  // While the Assistant works on something, check back every 15 s and on focus.
+  const workingIds = tasks.filter((t) => t.assistantRun?.status === "working").map((t) => t._id).join(",");
+  useEffect(() => {
+    if (!workingIds) return;
+    const ids = workingIds.split(",");
+    const poll = async () => {
+      for (const id of ids) {
+        try {
+          const res = await fetch(`/api/tasks/${id}/assistant`, { cache: "no-store" });
+          if (!res.ok) continue;
+          const data = (await res.json()) as { assistantRun: AssistantRunView | null; checklists: RelayTask["checklists"] };
+          if (data.assistantRun?.status === "working") continue;
+          latest.current.onTaskPatch(id, { assistantRun: data.assistantRun, checklists: data.checklists });
+          const title = latest.current.tasks.find((t) => t._id === id)?.title ?? "a task";
+          if (data.assistantRun?.status === "done") toast.success(`Assistant finished “${title}”`);
+          else if (data.assistantRun?.status === "blocked") toast(`Assistant needs you on “${title}”`);
+        } catch {
+          // offline for a moment: try again next round
+        }
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 15_000);
+    const onFocus = () => void poll();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [workingIds]);
 
   const update = (fn: (prev: Delegations) => Delegations) =>
     setDelegations((prev) => {
@@ -81,39 +139,122 @@ export function DelegateQuadrant(props: Props) {
     const them: Item[] = [];
     const none: Item[] = [];
     for (const task of [...(samples ?? []), ...tasks]) {
-      const delegation = delegations[task._id];
+      const run = !isSample(task) && task.assistantRun ? task.assistantRun : undefined;
+      let delegation = run ? delegationFromRun(task, run) : delegations[task._id];
+      // A prototype hand-off to Assistant on a real task, from before it was real: not a hand-off.
+      if (!run && delegation?.to === "assistant" && !isSample(task)) delegation = undefined;
       if (!delegation) {
         none.push({ task, chips: [] });
         continue;
       }
       const chips = buildRelay(task, delegation);
-      const holder = currentChip(chips)?.who ?? delegation.to;
-      (holder === "you" ? you : them).push({ task, delegation, chips, holder });
+      let holder = currentChip(chips)?.who ?? delegation.to;
+      // The Assistant reported back but its step is next: it waits on you to send it back.
+      if (run && run.status !== "working" && holder === "assistant") holder = "you";
+      (holder === "you" ? you : them).push({ task, delegation, chips, holder, run });
     }
     return [...you, ...them, ...none];
   }, [samples, tasks, delegations]);
 
   // ===== actions =====
 
+  const forgetLocal = (taskId: string) =>
+    update((prev) => {
+      const next = { ...prev };
+      delete next[taskId];
+      return next;
+    });
+
+  /** Hand a real task to the Assistant: fires the Claude routine. */
+  const fireAssistant = async (task: RelayTask, mode: HandOffMode) => {
+    if (busy) return;
+    const stepOwners = task.assistantRun?.stepOwners ?? delegations[task._id]?.stepOwners ?? {};
+    setBusy(task._id);
+    try {
+      const res = await fetch(`/api/tasks/${task._id}/assistant`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, stepOwners }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { assistantRun?: AssistantRunView; error?: string; code?: string };
+      if (!res.ok || !data.assistantRun) {
+        if (data.code === "no_routine") {
+          setRoutine({ connected: false });
+          pendingRef.current = { taskId: task._id, mode };
+          setConnectOpen(true);
+          toast("Connect your Claude routine first, and the task goes straight to it.");
+        } else {
+          toast.error(data.error ?? "Couldn't hand it to the Assistant.");
+        }
+        return;
+      }
+      forgetLocal(task._id);
+      props.onTaskPatch(task._id, { assistantRun: data.assistantRun });
+      toast.success("Handed to Assistant. Claude is starting on it.");
+    } catch {
+      toast.error("Couldn't reach EisenQ. Try again.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onRoutineConnected = (status: RoutineStatus) => {
+    setRoutine(status);
+    setConnectOpen(false);
+    const pending = pendingRef.current;
+    pendingRef.current = null;
+    const task = pending && tasks.find((t) => t._id === pending.taskId);
+    if (task && pending) void fireAssistant(task, pending.mode);
+    else toast.success("Claude routine connected");
+  };
+
+  const disconnectRoutine = async () => {
+    const res = await fetch("/api/settings/assistant-routine", { method: "DELETE" }).catch(() => null);
+    if (res?.ok) {
+      setRoutine({ connected: false });
+      toast("Claude routine disconnected");
+    }
+  };
+
   const handOff = (task: RelayTask, to: HelperId, mode: HandOffMode) => {
+    if (to === "assistant" && !isSample(task)) {
+      void fireAssistant(task, mode);
+      return;
+    }
     update((prev) => ({ ...prev, [task._id]: { to, mode, stepOwners: {}, at: new Date().toISOString() } }));
     toast.success(`Handed to ${helper(to).name}`);
   };
 
-  const takeBack = (task: RelayTask) => {
-    update((prev) => {
-      const next = { ...prev };
-      delete next[task._id];
-      return next;
-    });
+  const takeBack = async (task: RelayTask) => {
+    if (task.assistantRun && !isSample(task)) {
+      const res = await fetch(`/api/tasks/${task._id}/assistant`, { method: "DELETE" }).catch(() => null);
+      if (!res?.ok) {
+        toast.error("Couldn't take it back. Try again.");
+        return;
+      }
+      props.onTaskPatch(task._id, { assistantRun: null });
+    }
+    forgetLocal(task._id);
     toast(`Took back “${task.title}”`);
   };
 
-  const setOwner = (task: RelayTask, stepId: string, who: Who) =>
+  const setOwner = (task: RelayTask, stepId: string, who: Who) => {
+    const run = !isSample(task) ? task.assistantRun : undefined;
+    if (run) {
+      const stepOwners = { ...run.stepOwners, [stepId]: who };
+      props.onTaskPatch(task._id, { assistantRun: { ...run, stepOwners } });
+      void fetch(`/api/tasks/${task._id}/assistant`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stepOwners }),
+      }).then((r) => { if (!r.ok) toast.error("Couldn't save who does that step."); }).catch(() => undefined);
+      return;
+    }
     update((prev) => {
       const d = prev[task._id];
       return d ? { ...prev, [task._id]: { ...d, stepOwners: { ...d.stepOwners, [stepId]: who } } } : prev;
     });
+  };
 
   const tick = (task: RelayTask, chip: RelayChip) => {
     if (!chip.checklistId || !chip.stepId) return;
@@ -132,11 +273,7 @@ export function DelegateQuadrant(props: Props) {
   };
 
   const complete = (task: RelayTask) => {
-    update((prev) => {
-      const next = { ...prev };
-      delete next[task._id];
-      return next;
-    });
+    forgetLocal(task._id);
     if (openId === task._id) setOpenId(null);
     if (isSample(task)) {
       setSamples((prev) => prev?.filter((t) => t._id !== task._id) ?? null);
@@ -277,15 +414,20 @@ export function DelegateQuadrant(props: Props) {
           <HandOffMenu hasSteps={relaySteps(task).length > 0} onPick={(to, mode) => handOff(task, to, mode)}>
             <button className="inline-flex items-center min-h-[40px] px-1">
               <span className="inline-flex items-center h-[30px] px-[13px] rounded-full text-[12.5px] font-medium"
-                style={{ background: "var(--btn-primary)", color: "var(--btn-fg)" }}>Hand off</span>
+                style={{ background: "var(--btn-primary)", color: "var(--btn-fg)" }}>
+                {busy === task._id ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Handing off…</> : "Hand off"}
+              </span>
             </button>
           </HandOffMenu>
         </div>
       );
     }
 
+    const { run } = item;
     const now = currentChip(chips);
-    const theirTurn = now && now.who !== "you" ? now : undefined;
+    const theirTurn = !run && now && now.who !== "you" ? now : undefined;
+    // The Assistant reported back, and the next step (or a retry) is its again.
+    const sendBack = run && run.status !== "working" && (now?.who === "assistant" || run.status === "blocked");
     return (
       <div className="flex flex-col gap-2 mt-2 mb-1 px-3 pt-2.5 pb-1 rounded-[10px]" style={panelStyle}>
         <div className="flex items-center gap-2 text-[12px]" style={{ color: "var(--ink4)" }}>
@@ -303,10 +445,17 @@ export function DelegateQuadrant(props: Props) {
             </li>
           ))}
         </ol>
-        <div className="text-[12.5px] leading-[1.4]" style={{ color: "var(--ink3)" }}>{latestLine(chips, delegation)}</div>
+        {run ? <RunStatus run={run} /> : (
+          <div className="text-[12.5px] leading-[1.4]" style={{ color: "var(--ink3)" }}>{latestLine(chips, delegation)}</div>
+        )}
         <div className="flex flex-wrap items-center -mx-2" style={{ borderTop: "1px solid var(--line2)" }}>
           <LinkButton onClick={() => openTask(task)}>Open task</LinkButton>
-          <LinkButton onClick={() => takeBack(task)}>Take it back</LinkButton>
+          <LinkButton onClick={() => void takeBack(task)}>Take it back</LinkButton>
+          {sendBack && (
+            <LinkButton onClick={() => void fireAssistant(task, run.mode)}>
+              {busy === task._id ? "Sending…" : run.status === "blocked" ? "Ask Assistant to try again" : "Send back to Assistant"}
+            </LinkButton>
+          )}
           {theirTurn && (
             <>
               <span className="flex-1" />
@@ -337,7 +486,7 @@ export function DelegateQuadrant(props: Props) {
             <span className="w-[9px] h-[9px] rounded-full shrink-0" style={{ background: meta.color }} />
             <span style={{ fontFamily: "var(--font-serif)", color: "var(--ink)" }} className="text-[24px] leading-tight">{meta.name}</span>
             <span className="text-[10px] tracking-[0.08em] uppercase font-semibold rounded-full px-[7px] py-px"
-              title="Hand-offs are saved in this browser only"
+              title="Hand-offs to Assistant are real. Hand-offs to household members are saved in this browser only."
               style={{ border: "1px dashed var(--check-bd)", color: "var(--muted5)" }}>Prototype</span>
           </div>
           <div className="text-[11px] tracking-[0.12em] uppercase mt-[3px] ml-[18px]" style={{ color: "var(--muted3)" }}>{meta.subtitle}</div>
@@ -346,6 +495,12 @@ export function DelegateQuadrant(props: Props) {
       </div>
 
       <div className="px-[22px] pt-5 pb-[22px] flex-1 flex flex-col">
+        {connectOpen && (
+          <ConnectRoutine
+            onSaved={onRoutineConnected}
+            onCancel={() => { pendingRef.current = null; setConnectOpen(false); }}
+          />
+        )}
         {headline ? (
           <>
             {/* next action */}
@@ -419,10 +574,26 @@ export function DelegateQuadrant(props: Props) {
               style={{ color: "var(--ink)" }}
             />
           </div>
-          <button onClick={toggleSamples} className="self-start inline-flex items-center gap-1.5 min-h-[32px] text-[12px]" style={{ color: "var(--accent)" }}>
-            <FlaskConical className="w-3.5 h-3.5" />
-            {samples ? "Hide sample tasks" : "Try it with sample tasks"}
-          </button>
+          <div className="flex flex-wrap items-center gap-x-4">
+            <button onClick={toggleSamples} className="inline-flex items-center gap-1.5 min-h-[32px] text-[12px]" style={{ color: "var(--accent)" }}>
+              <FlaskConical className="w-3.5 h-3.5" />
+              {samples ? "Hide sample tasks" : "Try it with sample tasks"}
+            </button>
+            {routine && !connectOpen && (
+              routine.connected ? (
+                <span className="inline-flex items-center gap-1.5 min-h-[32px] text-[12px]" style={{ color: "var(--ink4)" }}>
+                  <Sparkles className="w-3.5 h-3.5" style={{ color: "var(--accent)" }} />
+                  Assistant runs on your Claude routine
+                  <button onClick={() => void disconnectRoutine()} className="underline underline-offset-2" style={{ color: "var(--ink4)" }}>Disconnect</button>
+                </span>
+              ) : (
+                <button onClick={() => setConnectOpen(true)} className="inline-flex items-center gap-1.5 min-h-[32px] text-[12px]" style={{ color: "var(--accent)" }}>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Connect Claude for Assistant
+                </button>
+              )
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -445,6 +616,100 @@ function Avatar({ who, size }: { who: Who; size: number }) {
       style={{ width: size, height: size, fontSize: Math.round(size * 0.46), background: "var(--chip)", border: "1px solid var(--check-bd)", color: "var(--ink2)" }}>
       {h.initial}
     </span>
+  );
+}
+
+/** While the Assistant works: a live line. After: what it reported back. */
+function RunStatus({ run }: { run: AssistantRunView }) {
+  if (run.status === "working") {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12.5px] leading-[1.4]" style={{ color: "var(--ink3)" }}>
+        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: "var(--accent)" }} aria-hidden />
+        <span>Claude is working on it · started {format(new Date(run.requestedAt), "EEE h:mm a")}</span>
+        {run.sessionUrl && (
+          <a href={run.sessionUrl} target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-medium" style={{ color: "var(--accent)" }}>
+            Watch in Claude <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </div>
+    );
+  }
+  const stuck = run.status === "blocked";
+  return (
+    <div className="rounded-[8px] px-3 py-2.5" style={{ background: "var(--tint)" }}>
+      <div className="flex flex-wrap items-center gap-x-2 mb-1 text-[10.5px] tracking-[0.1em] uppercase" style={{ color: stuck ? "var(--tag-fg)" : "var(--muted5)" }}>
+        <span>{stuck ? "Assistant got stuck" : "Assistant's report"}</span>
+        {run.finishedAt && <span className="normal-case tracking-normal">· {format(new Date(run.finishedAt), "EEE h:mm a")}</span>}
+        {run.sessionUrl && (
+          <a href={run.sessionUrl} target="_blank" rel="noopener noreferrer"
+            className="normal-case tracking-normal inline-flex items-center gap-1" style={{ color: "var(--accent)" }}>
+            See the run <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+      </div>
+      <div className="text-[13px] leading-[1.5] whitespace-pre-wrap break-words max-h-[260px] overflow-y-auto" style={{ color: "var(--ink2)" }}>
+        <LinkifiedText text={run.result ?? "No details."} linkStyle={{ color: "var(--accent)" }} />
+      </div>
+    </div>
+  );
+}
+
+/** Paste the routine's API trigger URL and token. The token is stored encrypted and never shown again. */
+function ConnectRoutine({ onSaved, onCancel }: { onSaved: (s: RoutineStatus) => void; onCancel: () => void }) {
+  const [url, setUrl] = useState("");
+  const [token, setToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/settings/assistant-routine", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, token }),
+      });
+      const data = (await res.json().catch(() => ({}))) as RoutineStatus & { error?: string };
+      if (!res.ok) setError(data.error ?? "Couldn't save it.");
+      else onSaved(data);
+    } catch {
+      setError("Couldn't reach EisenQ. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const field = "w-full rounded-[8px] px-3 py-2 text-[13px] outline-none bg-[var(--card)] border border-[var(--surface-bd)] focus:border-[var(--accent)]";
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); void save(); }}
+      className="flex flex-col gap-2 mb-4 p-3 rounded-[10px]" style={{ border: "1px solid var(--surface-bd)", background: "var(--card)" }}>
+      <div className="text-[13.5px] font-semibold" style={{ color: "var(--ink)" }}>Connect Claude for Assistant</div>
+      <p className="text-[12.5px] leading-[1.45] m-0" style={{ color: "var(--ink3)" }}>
+        Assistant runs as a routine on your own Claude plan. At{" "}
+        <a href="https://claude.ai/code/routines" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>claude.ai/code/routines</a>,
+        open your EisenQ routine, choose Add another trigger → API → Generate token, and paste both here.
+      </p>
+      <input className={field} style={{ color: "var(--ink)" }} value={url} onChange={(e) => setUrl(e.target.value)}
+        name="routine-trigger-url" type="url" inputMode="url"
+        placeholder="https://api.anthropic.com/v1/claude_code/routines/trig_…/fire" aria-label="Trigger URL"
+        autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} />
+      {/* A text field masked with CSS, not type="password": browsers otherwise offer
+          the person's saved site password here and their email in the URL field. */}
+      <input className={field} style={{ color: "var(--ink)", WebkitTextSecurity: "disc" } as React.CSSProperties} value={token}
+        onChange={(e) => setToken(e.target.value)} name="routine-token" type="text"
+        placeholder="sk-ant-oat01-…" aria-label="Token" autoComplete="off" data-1p-ignore data-lpignore="true" spellCheck={false} />
+      {error && <div className="text-[12.5px]" style={{ color: "var(--tag-fg)" }} role="alert">{error}</div>}
+      <div className="flex items-center gap-2">
+        <button type="submit" disabled={saving || !url.trim() || !token.trim()}
+          className="inline-flex items-center h-[32px] px-[14px] rounded-full text-[12.5px] font-medium disabled:opacity-50"
+          style={{ background: "var(--btn-primary)", color: "var(--btn-fg)" }}>
+          {saving ? "Connecting…" : "Connect"}
+        </button>
+        <LinkButton onClick={onCancel}>Cancel</LinkButton>
+      </div>
+    </form>
   );
 }
 
