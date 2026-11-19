@@ -68,6 +68,24 @@ export interface Task {
   archivedAt?: Date;        // Set when archived; archived tasks drop out of the matrix
   checklists?: TaskChecklist[]; // Reusable checklists copied in from Myndlist; never surface as tasks
   source?: TaskSource;      // Set only by the browser capture extension
+  assistantRun?: AssistantRun; // Set while the task is handed to the Assistant (a Claude routine)
+}
+
+// Who does a checklist step in the Delegate quadrant relay. Household members
+// are placeholders until household accounts exist.
+export type StepOwner = "you" | "assistant" | "sam" | "noor";
+
+// A hand-off to the Assistant: EisenQ fires the person's Claude Code routine,
+// which reads the task through the EisenQ connector, does its steps and reports
+// back with report_assistant_result.
+export interface AssistantRun {
+  mode: "steps" | "outcome";        // follow the checklist, or figure it out
+  stepOwners: Record<string, StepOwner>; // per-step overrides; unlisted steps are the Assistant's
+  status: "working" | "done" | "blocked";
+  requestedAt: Date;
+  sessionUrl?: string;              // the Claude Code session the routine started
+  finishedAt?: Date;
+  result?: string;                  // the Assistant's report, draft or reason it got stuck
 }
 
 export type GoalPeriodType = "week" | "month" | "year" | "custom";
@@ -129,6 +147,10 @@ export interface UserSettings {
   myndlistApiUrlEnc?: string; // AES-256-GCM encrypted Myndlist API base URL
   myndlistApiKeyEnc?: string; // AES-256-GCM encrypted Myndlist API key
   anthropicApiKeyEnc?: string; // AES-256-GCM encrypted Anthropic (Claude) API key, for the AI assistant
+  // The Claude Code routine the Delegate quadrant fires: its API trigger URL and
+  // bearer token, both encrypted. The token is never sent back to the browser.
+  assistantRoutineUrlEnc?: string;
+  assistantRoutineTokenEnc?: string;
   // Myndlist has no field for the completion gate, so it is kept here,
   // keyed by Myndlist checklist id. Not a secret, so not encrypted.
   checklistGates?: Record<string, boolean>;

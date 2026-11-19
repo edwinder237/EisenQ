@@ -1,7 +1,8 @@
 import { McpServer, type CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { ObjectId } from "mongodb";
-import type { Goal, McpSettings, Task, TaskQuadrant, TaskSource } from "~/server/db/schema";
+import type { Goal, McpSettings, StepOwner, Task, TaskQuadrant, TaskSource } from "~/server/db/schema";
+import { assistantOwns, recordAssistantResult } from "~/server/assistant-routine";
 import { goalsCollection, tasksCollection } from "~/server/db";
 import {
   QUADRANT_NAMES,
@@ -555,7 +556,153 @@ export function buildMcpServer(c: McpCallContext): McpServer {
     );
   }
 
+  registerAssistantTools(server, c, write);
+
   return server;
+}
+
+// ===== The Assistant's hand-offs =====
+//
+// The Delegate quadrant hands a task to "Assistant" by firing the person's
+// Claude Code routine. The routine finds the task here, does its own steps,
+// and reports back once. See ~/server/assistant-routine.
+
+const OWNER_NAMES: Record<StepOwner, string> = { you: "the person", assistant: "Assistant (you)", sam: "Sam", noor: "Noor" };
+
+function assistantTaskView(t: Task, tz: string) {
+  const run = t.assistantRun!;
+  const steps = [...(t.checklists ?? [])]
+    .sort((a, b) => a.order - b.order)
+    .flatMap((c) => [...c.steps].sort((a, b) => a.order - b.order).map((s) => ({ ...s, checklist: c.name })))
+    .filter((s) => s.text.trim());
+  const nextUndone = steps.find((s) => !s.done && !s.optional);
+  const yourSteps: string[] = [];
+  if (run.mode === "steps") {
+    // The relay runs in order: the Assistant's turn lasts until a required step that belongs to someone else.
+    for (const s of steps) {
+      if (s.done) continue;
+      if (!assistantOwns(run, s.id)) { if (!s.optional) break; continue; }
+      yourSteps.push(s.id);
+    }
+  }
+  return {
+    id: String(t._id),
+    title: t.title,
+    notes: t.description,
+    due: t.dueDate ? formatInZone(new Date(t.dueDate), tz) : undefined,
+    how: run.mode === "steps" ? "Follow the checklist" : "Figure it out: no steps were given, plan it yourself",
+    status: run.status,
+    handedOverAt: formatInZone(new Date(run.requestedAt), tz),
+    checklist: steps.map((s) => ({
+      id: s.id,
+      text: s.text,
+      done: s.done,
+      optional: s.optional ? true : undefined,
+      note: s.note,
+      doneBy: OWNER_NAMES[run.stepOwners[s.id] ?? "assistant"],
+    })),
+    yourStepsNow: run.mode === "steps" ? yourSteps : undefined,
+    stopBefore:
+      run.mode === "steps" && nextUndone && !assistantOwns(run, nextUndone.id) && yourSteps.length === 0
+        ? `“${nextUndone.text}” belongs to ${OWNER_NAMES[run.stepOwners[nextUndone.id]!]}. Nothing is yours to do yet.`
+        : undefined,
+  };
+}
+
+function registerAssistantTools(
+  server: McpServer,
+  c: McpCallContext,
+  write: (tool: string, fn: () => Promise<{ result: CallToolResult; summary: string; taskId?: string }>) => Promise<CallToolResult>,
+) {
+  const { permissions: p, preferences: prefs } = c.mcp;
+  const tz = prefs.timeZone;
+
+  if (p.readTasks) {
+    server.registerTool(
+      "list_assistant_tasks",
+      {
+        title: "Tasks handed to the Assistant",
+        description:
+          "Tasks the person handed to the Assistant in EisenQ's Delegate quadrant that are still waiting for its work. Call get_assistant_task for one before doing it.",
+        inputSchema: z.object({}),
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async () =>
+        guard(async () => {
+          const tasks = await tasksCollection
+            .find({ userId: c.userId, "assistantRun.status": "working", status: { $ne: "completed" }, archivedAt: { $exists: false } })
+            .sort({ "assistantRun.requestedAt": 1 })
+            .limit(25)
+            .toArray();
+          return ok(
+            tasks.length ? `${tasks.length} task${tasks.length === 1 ? "" : "s"} waiting for the Assistant.` : "Nothing is waiting for the Assistant.",
+            tasks.map((t) => ({ id: String(t._id), title: t.title, handedOverAt: formatInZone(new Date(t.assistantRun!.requestedAt), tz) })),
+          );
+        }),
+    );
+
+    server.registerTool(
+      "get_assistant_task",
+      {
+        title: "Read a task handed to the Assistant",
+        description: [
+          "One task handed to the Assistant, with its notes and checklist.",
+          "In 'Follow the checklist' mode, do only the steps listed in yourStepsNow, in order, then stop: later steps belong to the person or a household member.",
+          "In 'Figure it out' mode, plan and do the task yourself.",
+          "Prepare anything that would be sent, paid or published (an email, a booking, a purchase) as a draft for the person to approve; never send or pay.",
+          "When done or stuck, call report_assistant_result exactly once.",
+        ].join(" "),
+        inputSchema: z.object({ id: idInput }),
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      async (args) =>
+        guard(async () => {
+          const task = await tasksCollection.findOne({ _id: new ObjectId(args.id), userId: c.userId });
+          if (!task) return fail("No task with that id.");
+          if (!task.assistantRun) return fail("This task isn't handed to the Assistant (it may have been taken back). Leave it alone.");
+          if (task.status === "completed") return fail("The person already completed this task. Leave it alone.");
+          return ok(`“${task.title}”, handed to the Assistant.`, assistantTaskView(task, tz));
+        }),
+    );
+  }
+
+  if (p.editTasks) {
+    server.registerTool(
+      "report_assistant_result",
+      {
+        title: "Report back on a handed-off task",
+        description: [
+          "Report back once on a task from get_assistant_task. This hands it back to the person.",
+          "status 'done': you finished your part. status 'blocked': you couldn't, and result says why and what you need.",
+          "result is what the person reads in EisenQ: a short summary plus the draft, findings or links. Plain text, no tables.",
+          "steps_done lists the checklist step ids you completed; only your own steps are ticked.",
+        ].join(" "),
+        inputSchema: z.object({
+          id: idInput,
+          status: z.enum(["done", "blocked"]),
+          result: z.string().min(1).max(20000),
+          steps_done: z.array(z.string().max(100)).max(200).optional(),
+        }),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      },
+      async (args) =>
+        write("report_assistant_result", async () => {
+          const { task, ticked, skipped } = await recordAssistantResult(c.userId, args.id, {
+            status: args.status,
+            result: args.result.trim(),
+            stepsDone: args.steps_done ?? [],
+          });
+          const note = skipped.length ? ` Not ticked (not yours, or not on this task): ${skipped.join(", ")}.` : "";
+          return {
+            result: ok(
+              `Reported on “${task.title}” as ${args.status}. ${ticked} step${ticked === 1 ? "" : "s"} ticked. It's back with the person now.${note}`,
+            ),
+            summary: `Assistant reported “${task.title}” as ${args.status}`,
+            taskId: String(task._id),
+          };
+        }),
+    );
+  }
 }
 
 function periodKeyFor(period: "week" | "month" | "year" | "custom", date: string, startDate?: string): string {

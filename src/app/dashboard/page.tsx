@@ -6,6 +6,13 @@ import { LinkifiedText } from "~/components/LinkifiedText";
 import { AssistantPanel, type AssistantSuggestion } from "~/components/AssistantPanel";
 import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
+import { DelegateQuadrant } from "~/components/DelegateQuadrant";
+import type { AssistantRunView } from "~/lib/delegate-prototype";
+
+// The Delegate quadrant with hand-offs: Assistant hand-offs are real (Claude
+// routine); household hand-offs are a prototype kept in localStorage.
+// Set to false to bring back the classic quadrant card.
+const DELEGATE_PROTOTYPE = true;
 import {
   CircleDashed,
   CircleDot,
@@ -120,6 +127,8 @@ interface Task {
   checklists?: TaskChecklist[];
   // Set by the capture extension, or by an AI connector ("agent", title = app name)
   source?: { kind: "gmail" | "page" | "selection" | "agent"; title?: string; url?: string };
+  // Set while the task is handed to the Assistant (a Claude routine); see DelegateQuadrant
+  assistantRun?: AssistantRunView | null;
 }
 
 // A reusable checklist copied onto a task. Distinct from ChecklistItem below,
@@ -4805,6 +4814,26 @@ export default function HomePage() {
               const meta = MATRIX_META[quadrant];
               const { nextAction, upNext, cleared } = getQuadrantView(quadrant);
               const quickVal = quickTaskInputs[quadrant];
+              if (DELEGATE_PROTOTYPE && quadrant === "urgent-not-important") {
+                const findTask = (id: string) => tasks.find(t => t._id === id);
+                return (
+                  <DelegateQuadrant
+                    key={quadrant}
+                    tasks={getOrderedQuadrantTasks(quadrant).filter(t => t.status !== "completed")}
+                    meta={meta}
+                    quickValue={quickVal}
+                    onQuickChange={(value) => setQuickTaskInputs(prev => ({ ...prev, [quadrant]: value }))}
+                    onQuickAdd={() => void handleQuickAddTask(quadrant, quickVal)}
+                    onOpenTask={(id) => { const t = findTask(id); if (t) void openTaskForEdit(t); }}
+                    onToggleStep={(taskId, checklistId, stepId) => {
+                      const checklist = findTask(taskId)?.checklists?.find(c => c.id === checklistId);
+                      if (checklist) handleToggleChecklistStep(taskId, checklist, stepId);
+                    }}
+                    onCompleteTask={(id) => { const t = findTask(id); if (t) void handleToggleComplete(t); }}
+                    onTaskPatch={(id, patch) => setTasks((prev) => prev.map((t) => (t._id === id ? { ...t, ...(patch as Partial<Task>) } : t)))}
+                  />
+                );
+              }
               return (
                 <div key={quadrant} className="rounded-2xl overflow-hidden flex flex-col min-h-[300px]"
                   style={{ background: "var(--surface)", border: "1px solid var(--surface-bd)", boxShadow: "0 14px 34px -20px rgba(70,55,30,0.45)" }}>
