@@ -133,6 +133,7 @@ export async function createTask(userId: string, input: CreateTaskInput): Promis
     source: input.source,
     createdAt: now,
     updatedAt: now,
+    quadrantSince: now,
     userId,
   };
 
@@ -178,6 +179,13 @@ export async function updateTask(userId: string, id: string, input: UpdateTaskIn
   // wipe the field. Absent means "leave it alone", whoever the caller is.
   const set: Record<string, unknown> = { ...definedOnly(rest), updatedAt: new Date() };
   const unset: Record<string, ""> = {};
+
+  // Start the "how long has it sat here" clock only on a real move, so
+  // re-saving a task with the same quadrant doesn't reset it.
+  if (rest.quadrant) {
+    const current = await tasksCollection.findOne({ _id: oid, userId }, { projection: { quadrant: 1 } });
+    if (current && current.quadrant !== rest.quadrant) set.quadrantSince = new Date();
+  }
 
   // Moving into Do First without saying a priority makes it high.
   if (rest.quadrant === "urgent-important" && rest.priority === undefined) set.priority = "high";
