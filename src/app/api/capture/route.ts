@@ -125,6 +125,7 @@ export async function POST(request: NextRequest) {
       source: body.source ? { ...body.source, capturedAt: now } : undefined,
       createdAt: now,
       updatedAt: now,
+      quadrantSince: now,
       userId,
       // parentTaskId and archivedAt are deliberately never set: GET /api/tasks
       // filters both on null, so either would hide the task from the matrix.

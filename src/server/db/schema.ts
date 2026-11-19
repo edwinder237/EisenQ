@@ -65,6 +65,7 @@ export interface Task {
   linkedParentId?: ObjectId; // Soft link: task stays top-level in the matrix but also appears under this parent's subtasks
   goalId?: ObjectId;        // Optional link to a weekly/monthly goal
   sortOrder?: number;       // Manual position within its quadrant; lower = higher up (top = Next action)
+  quadrantSince?: Date;     // When it entered its current quadrant; drives the "sitting for 5d" hint. Older tasks fall back to createdAt
   archivedAt?: Date;        // Set when archived; archived tasks drop out of the matrix
   checklists?: TaskChecklist[]; // Reusable checklists copied in from Myndlist; never surface as tasks
   source?: TaskSource;      // Set only by the browser capture extension

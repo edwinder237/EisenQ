@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback, useMemo, Fragment, type React
 import { isBlankStep, requiredStepsLeft, stepProgress } from "~/lib/checklist-steps";
 import { LinkifiedText } from "~/components/LinkifiedText";
 import { AssistantPanel, type AssistantSuggestion } from "~/components/AssistantPanel";
+import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
 import type { AssistantRunView } from "~/lib/delegate-prototype";
@@ -52,6 +53,7 @@ import {
   Info,
   Archive,
   Sparkles,
+  Puzzle,
 } from "lucide-react";
 import {
   startOfWeek,
@@ -118,6 +120,7 @@ interface Task {
   linkedParentId?: string;
   goalId?: string;
   sortOrder?: number;
+  quadrantSince?: string; // when it entered its current quadrant; older tasks lack it
   archivedAt?: string;
   completedAt?: string;
   subtaskCount?: number;
@@ -3436,6 +3439,34 @@ export default function HomePage() {
     !!task.dueDate && task.status !== "completed" && new Date(task.dueDate) < startOfDay(new Date());
 
   // Title of the task this one is soft-linked under (shown as a matrix hint), if any.
+  // How long an open Do First task has sat there. Silent for the first 3 days;
+// turns the overdue red at a week, the cue to do, delegate or drop it. Counts
+// from when it entered Do First, so a freshly promoted task isn't "old".
+  const staleAge = (t: Task, size: number) => {
+    if (t.quadrant !== "urgent-important" || t.status === "completed") return null;
+    const since = new Date(t.quadrantSince ?? t.createdAt).getTime();
+    const days = Math.floor((Date.now() - since) / 86_400_000);
+    if (!Number.isFinite(days) || days < 3) return null;
+    const text = days < 14 ? `${days}d` : `${Math.floor(days / 7)}w`;
+    return (
+      <span className="font-normal shrink-0 tabular-nums" style={{ fontSize: size, color: days >= 7 ? "var(--tag-fg)" : "var(--muted4)" }}
+        title={`In Do First for ${days} days`}>
+        {text}
+      </span>
+    );
+  };
+  // A small mark on tasks that didn't start in EisenQ: a sparkle for AI apps,
+// a puzzle piece for the Chrome extension. Hand-made tasks get nothing.
+  const sourceIcon = (t: Task, size: number, className: string) => {
+    const src = describeSource(t.source);
+    if (src.kind === "app" || (src.kind === "ai" && !mcpConfig.preferences.labelAiTasks)) return null;
+    const Icon = src.kind === "ai" ? Sparkles : Puzzle;
+    return (
+      <span className={className} title={`Added via ${src.label}`} style={{ color: "var(--muted3)" }}>
+        <Icon style={{ width: size, height: size }} />
+      </span>
+    );
+  };
   const linkedParentTitle = (task: Task) =>
     task.linkedParentId ? tasks.find(t => t._id === task.linkedParentId)?.title : undefined;
 
@@ -4872,6 +4903,8 @@ export default function HomePage() {
                                   <Link2 className="w-[14px] h-[14px]" />
                                 </span>
                               )}
+                              {sourceIcon(nextAction, 14, "inline-flex items-center align-middle ml-1.5")}
+                              {staleAge(nextAction, 12) && <span className="ml-1.5 align-middle">{staleAge(nextAction, 12)}</span>}
                               {nextAction.dueDate && nextAction.status !== "completed" && (
                                 isTaskOverdue(nextAction) ? (
                                   <span className="text-[12px] font-normal" style={{ color: "var(--tag-fg)" }}> · overdue {format(new Date(nextAction.dueDate), "MMM d")}</span>
@@ -4967,12 +5000,14 @@ export default function HomePage() {
                                       <Link2 className="w-[13px] h-[13px]" />
                                     </span>
                                   )}
+                                  {sourceIcon(t, 13, "shrink-0 inline-flex items-center")}
                                   {t.dueDate && t.status !== "completed" && (
                                     <span className="text-[12px] font-normal shrink-0 tabular-nums"
                                       style={{ color: isTaskOverdue(t) ? "var(--tag-fg)" : "var(--muted3)" }}>
                                       {format(new Date(t.dueDate), "MMM d")}
                                     </span>
                                   )}
+                                  {staleAge(t, 12)}
                                   {t.status === "completed" && t.completedAt && (
                                     <span className="text-[12px] font-normal shrink-0 tabular-nums"
                                       title={`Completed ${format(new Date(t.completedAt), "PPpp")}`}
@@ -5804,9 +5839,20 @@ export default function HomePage() {
             <div className="flex items-center justify-between shrink-0" style={{ padding: "15px 22px", borderBottom: "1px solid var(--line2)", background: "var(--form-bg)" }}>
               <span className="text-[11px] tracking-[0.14em] uppercase" style={{ color: "var(--muted5)" }}>
                 {editingTask ? "Edit task" : "New task"}
-                {editingTask?.source?.kind === "agent" && mcpConfig.preferences.labelAiTasks && (
-                  <span className="normal-case tracking-normal" title="Added through an AI connector"> · via {editingTask.source.title ?? "an AI app"}</span>
-                )}
+                {editingTask && (() => {
+                  const src = describeSource(editingTask.source);
+                  // "Label tasks added by AI" still governs the AI label.
+                  if (src.kind === "ai" && !mcpConfig.preferences.labelAiTasks) return null;
+                  const text = src.kind === "app" ? src.label : `via ${src.label}`;
+                  return (
+                    <span className="normal-case tracking-normal" title={src.url ? "Open the original" : undefined}>
+                      {" · "}
+                      {src.url ? (
+                        <a href={src.url} target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>{text}</a>
+                      ) : text}
+                    </span>
+                  );
+                })()}
               </span>
               <div className="flex items-center gap-1">
                 {formData.dueDate && (

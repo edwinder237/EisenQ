@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
 import { Check, ChevronDown, Copy } from "lucide-react";
+import { friendlyAppName } from "~/lib/task-source";
 
 // Settings → AI connectors. The configuration (switch, permissions,
 // preferences) is a draft owned by the dashboard and saved with the rest of
@@ -236,7 +237,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
   };
 
   const changeAccess = async (app: ConnectedApp, action: "revoke" | "allow") => {
-    if (action === "revoke" && !confirm(`Revoke ${app.name}'s access to EisenQ? Its next request will be refused.`)) return;
+    if (action === "revoke" && !confirm(`Revoke ${friendlyAppName(app.name) ?? app.name}'s access to EisenQ? Its next request will be refused.`)) return;
     setBusyClient(app.clientId);
     try {
       const res = await fetch("/api/mcp/clients", {
@@ -245,7 +246,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
         body: JSON.stringify({ clientId: app.clientId, action }),
       });
       if (!res.ok) throw new Error();
-      toast.success(action === "revoke" ? `${app.name} revoked` : `${app.name} allowed again`);
+      toast.success(action === "revoke" ? `${friendlyAppName(app.name) ?? app.name} revoked` : `${friendlyAppName(app.name) ?? app.name} allowed again`);
       await refresh();
     } catch {
       toast.error("Couldn't change that app's access");
@@ -408,7 +409,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
                 key={app.clientId}
                 title={
                   <>
-                    {app.name}
+                    {friendlyAppName(app.name) ?? app.name}
                     {app.blocked && (
                       <span className="ml-1.5 text-[10.5px] font-semibold uppercase tracking-wide" style={{ color: "var(--tag-fg)" }}>revoked</span>
                     )}
@@ -441,7 +442,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
               {activity.slice(0, 20).map((a, i) => (
                 <div key={`${a.at}-${i}`} className="flex items-baseline justify-between gap-3" style={{ padding: "8px 12px", borderBottom: "1px solid var(--line2)" }}>
                   <span className="text-[12.5px] min-w-0" style={{ color: "var(--ink3)" }}>
-                    <strong style={{ color: "var(--ink2)", fontWeight: 600 }}>{a.clientName}</strong> · {a.summary}
+                    <strong style={{ color: "var(--ink2)", fontWeight: 600 }}>{friendlyAppName(a.clientName) ?? a.clientName}</strong> · {a.summary}
                   </span>
                   <span className="shrink-0 text-[11.5px]" style={{ color: "var(--muted)" }}>{ago(a.at)}</span>
                 </div>

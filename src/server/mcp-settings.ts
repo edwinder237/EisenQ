@@ -104,7 +104,8 @@ export async function touchClient(userId: string, mcp: McpSettings, clientId: st
   const now = new Date();
   const existing = mcp.clients.find((c) => c.clientId === clientId);
   if (existing) {
-    const better = name && name !== existing.name && existing.name === existing.clientId ? name : undefined;
+    // Names come from a known-host mapping first, so a fresh one is at least as good as what's stored.
+    const better = name && name !== existing.name ? name : undefined;
     await userSettingsCollection.updateOne(
       { userId, "mcp.clients.clientId": clientId },
       { $set: { "mcp.clients.$.lastUsedAt": now, ...(better ? { "mcp.clients.$.name": better } : {}) } },
