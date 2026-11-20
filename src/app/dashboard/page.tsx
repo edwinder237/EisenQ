@@ -348,6 +348,11 @@ const PRIORITY_META: Record<TaskPriority, { label: string; color: string }> = {
 };
 const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240, 480];
 
+// Routine rows: the title and its chips share one wrapping line, so a long
+// title pushes the chips underneath instead of past the card's edge.
+const ROW_BODY = "flex flex-wrap items-center gap-x-[8px] gap-y-[5px] min-w-0 flex-1";
+const ROW_TITLE = "text-[13.5px] leading-[20px] min-w-0 break-words";
+
 const SETTINGS_SECTIONS = [
   { id: "tasks", label: "Tasks" },
   { id: "greeting", label: "Greeting" },
@@ -5005,7 +5010,7 @@ export default function HomePage() {
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-[22px]">
           {/* Today's routine */}
-          <div className="rounded-2xl" style={{ background: "var(--card)", border: "1px solid var(--card-bd)", padding: "22px 24px" }}>
+          <div className="rounded-2xl min-w-0" style={{ background: "var(--card)", border: "1px solid var(--card-bd)", padding: "22px 24px" }}>
             <div className="flex items-baseline justify-between mb-3">
               <span style={{ fontFamily: "var(--font-serif)", color: "var(--ink)" }} className="text-[20px]">Today&apos;s routine</span>
               <button onClick={() => setRoutineDrawerOpen(true)} className="text-[12px]" style={{ color: "var(--accent)" }}>Manage ›</button>
@@ -5102,10 +5107,11 @@ export default function HomePage() {
                       const cadence = item.frequency === "weekly" ? weeklyLabel(item.daysOfWeek) : "Daily";
                       return (
                         <div key={`missed-${item._id}`} className="group flex flex-col">
-                          <div className="flex items-center gap-[10px]">
+                          <div className="flex items-start gap-[10px]">
                             <span className="w-[15px] shrink-0" />
-                            <span className="qcheck" title="Done — mark it caught up" onClick={() => void handleResolveMissed(item, latest, "complete")} />
-                            <span className="text-[13.5px]" style={{ color: "var(--ink2)" }}>{item.title}</span>
+                            <span className="qcheck mt-[2px]" title="Done — mark it caught up" onClick={() => void handleResolveMissed(item, latest, "complete")} />
+                            <div className={ROW_BODY}>
+                            <span className={ROW_TITLE} style={{ color: "var(--ink2)" }}>{item.title}</span>
                             {item.description && renderDescriptionInfo(item.title, item.description)}
                             {chip(missedLabel(missed, todayStr), "late", missed.length > 1 ? `Missed ${missed.map(d => relativeDayLabel(d, todayStr)).join(", ")}` : undefined)}
                             {cadence && chip(`↻ ${cadence}`)}
@@ -5116,6 +5122,7 @@ export default function HomePage() {
                               style={{ color: "var(--muted2)" }}>
                               <X className="w-[13px] h-[13px]" />
                             </button>
+                            </div>
                           </div>
                           {schedulerPanel(ref)}
                         </div>
@@ -5130,10 +5137,11 @@ export default function HomePage() {
                         ? missedDates({ ...item, caughtUpThrough: undefined }, todayStr, 7).length : 0;
                       return (
                         <div key={item._id} className="group flex flex-col">
-                          <div className="flex items-center gap-[10px]">
-                            <span className="text-[11px] tabular-nums w-[15px] text-right shrink-0" style={{ color: "var(--muted4)" }}>{idx + 1}</span>
-                            <span className={cn("qcheck", done && "checked")} onClick={() => void handleToggleChecklistItem(item._id)} />
-                            <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{item.title}</span>
+                          <div className="flex items-start gap-[10px]">
+                            <span className="text-[11px] tabular-nums w-[15px] text-right shrink-0 mt-[3px]" style={{ color: "var(--muted4)" }}>{idx + 1}</span>
+                            <span className={cn("qcheck mt-[2px]", done && "checked")} onClick={() => void handleToggleChecklistItem(item._id)} />
+                            <div className={ROW_BODY}>
+                            <span className={ROW_TITLE} style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{item.title}</span>
                             {item.description && renderDescriptionInfo(item.title, item.description)}
                             {cadence && chip(`↻ ${cadence}`)}
                             {recentMisses > 0 && (
@@ -5143,6 +5151,7 @@ export default function HomePage() {
                             )}
                             {runChip(ref)}
                             {!done && scheduleControl(ref, item.title)}
+                            </div>
                           </div>
                           {schedulerPanel(ref)}
                         </div>
@@ -5154,10 +5163,11 @@ export default function HomePage() {
                       const ref: RoutineRef = { kind: "maintenance", itemId: m._id, date: m.nextDueDate };
                       return (
                         <div key={m._id} className="group flex flex-col">
-                          <div className="flex items-center gap-[10px]">
+                          <div className="flex items-start gap-[10px]">
                             <span className="w-[15px] shrink-0" />
-                            <span className={cn("qcheck", done && "checked")} onClick={() => { if (!done) void handleMarkMaintenanceDone(m._id); }} />
-                            <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{m.title}</span>
+                            <span className={cn("qcheck mt-[2px]", done && "checked")} onClick={() => { if (!done) void handleMarkMaintenanceDone(m._id); }} />
+                            <div className={ROW_BODY}>
+                            <span className={ROW_TITLE} style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{m.title}</span>
                             {m.description && renderDescriptionInfo(m.title, m.description)}
                             {!done && (late
                               ? chip(`Late${maintenanceDaysLate(m) > 1 ? ` ${maintenanceDaysLate(m)}d` : ""}`, "late")
@@ -5165,6 +5175,7 @@ export default function HomePage() {
                             {chip(`↻ ${intervalLabel(m.intervalDays)}`, "muted", m.lastCompletedDate ? `Last done ${m.lastCompletedDate}` : undefined)}
                             {runChip(ref)}
                             {!done && scheduleControl(ref, m.title)}
+                            </div>
                           </div>
                           {schedulerPanel(ref)}
                         </div>
@@ -5174,9 +5185,9 @@ export default function HomePage() {
                   const half = Math.ceil(rows.length / 2);
                   return (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-[18px]">
-                      <div className="flex flex-col gap-[18px]">{rows.slice(0, half)}</div>
+                      <div className="flex flex-col gap-[18px] min-w-0">{rows.slice(0, half)}</div>
                       {rows.length > half && (
-                        <div className="flex flex-col gap-[18px]">{rows.slice(half)}</div>
+                        <div className="flex flex-col gap-[18px] min-w-0">{rows.slice(half)}</div>
                       )}
                     </div>
                   );
