@@ -1,7 +1,7 @@
 import { userSettingsCollection } from "~/server/db";
 import { decrypt } from "~/server/crypto";
 import { safeFetch } from "~/server/safe-fetch";
-import type { TaskChecklistStep } from "~/server/db/schema";
+import type { TaskChecklist, TaskChecklistStep } from "~/server/db/schema";
 import { isBlankStep, mergeStepsIntoSections, type EditedStep } from "~/lib/checklist-steps";
 
 // One place that knows how to talk to a user's Myndlist account, so the library
@@ -212,4 +212,34 @@ export async function saveStepsToMyndlist(
     method: "PATCH",
     body: JSON.stringify({ ...extra, sections }),
   });
+}
+
+/**
+ * Fetches a template and deep-copies it into a TaskChecklist, ready to push
+ * onto a task. Shared by the attach picker and routine runs so a copy is made
+ * the same way wherever it comes from. Returns an error message on failure.
+ */
+export async function copyChecklistFromMyndlist(
+  userId: string,
+  creds: MyndlistCredentials,
+  sourceId: string,
+  order: number,
+): Promise<{ checklist: TaskChecklist } | { error: string }> {
+  const result = await callMyndlist<{ checklist: MyndlistChecklist }>(creds, `/checklists/${encodeURIComponent(sourceId)}`);
+  if (result.outcome !== "ok") {
+    return { error: result.outcome === "http-error" ? result.message : "Couldn't reach Myndlist." };
+  }
+  const flat = flattenChecklist(result.data.checklist);
+  const settings = await userSettingsCollection.findOne({ userId });
+  return {
+    checklist: {
+      id: crypto.randomUUID(),
+      sourceId: flat.id,
+      name: flat.name,
+      blockCompletion: settings?.checklistGates?.[flat.id] ?? false,
+      order,
+      steps: copyStepsForAttach(flat),
+      attachedAt: new Date(),
+    },
+  };
 }

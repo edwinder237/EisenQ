@@ -218,6 +218,7 @@ interface ChecklistItem {
   completedDates: string[];
   carryOver?: boolean;
   caughtUpThrough?: string;
+  checklists?: RoutineChecklistRef[];
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -230,6 +231,13 @@ interface MaintenanceItem {
   intervalDays: number;
   lastCompletedDate?: string;
   nextDueDate: string;
+  checklists?: RoutineChecklistRef[];
+}
+
+// A Myndlist checklist attached to a routine item; a fresh copy goes onto each run.
+interface RoutineChecklistRef {
+  sourceId: string;
+  name: string;
 }
 
 interface PaymentLineItem {
@@ -586,7 +594,7 @@ export default function HomePage() {
   const [maintenanceItems, setMaintenanceItems] = useState<MaintenanceItem[]>([]);
   const [showMaintenanceForm, setShowMaintenanceForm] = useState(false);
   const [editingMaintenanceItem, setEditingMaintenanceItem] = useState<MaintenanceItem | null>(null);
-  const [maintenanceFormData, setMaintenanceFormData] = useState({ title: "", description: "", intervalDays: 90, nextDueDate: "" });
+  const [maintenanceFormData, setMaintenanceFormData] = useState({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
   const [paymentsData, setPaymentsData] = useState<PaymentsDueData | null>(null);
   const [paymentsError, setPaymentsError] = useState(false);
   // Which day the payments bar is showing. Always a local calendar date.
@@ -600,6 +608,7 @@ export default function HomePage() {
     frequency: "daily" as ChecklistFrequency,
     daysOfWeek: [] as number[],
     carryOver: null as boolean | null, // null = the default for its frequency
+    checklists: [] as RoutineChecklistRef[],
   });
   // Inline "put it on the schedule" panel under a routine row. Keyed by kind:itemId:date.
   const [routineSchedule, setRoutineSchedule] = useState<(RoutineRef & { title: string; taskId?: string; value: string }) | null>(null);
@@ -866,6 +875,7 @@ export default function HomePage() {
     void fetchGoals();
     void fetchChecklistItems();
     void fetchMaintenanceItems();
+    void ensureRoutineRuns();
   }, []);
 
   // Reload whenever the viewed day changes, and swap in that day's paid set so
@@ -1058,6 +1068,12 @@ export default function HomePage() {
       setMyndlistLoading(false);
     }
   }, [myndlistFetchedAt]);
+
+  // The routine and maintenance forms offer the library for attaching, so load
+  // it as soon as either form opens rather than when the picker is clicked.
+  useEffect(() => {
+    if (showChecklistForm || showMaintenanceForm) void fetchMyndlistTemplates();
+  }, [showChecklistForm, showMaintenanceForm, fetchMyndlistTemplates]);
 
   const openChecklistLibrary = useCallback((templateId?: string) => {
     setMyndlistDrawerOpen(true);
@@ -1570,6 +1586,31 @@ export default function HomePage() {
     .map(item => ({ item, missed: missedDates(item, todayStr) }))
     .filter(c => c.missed.length > 0);
 
+  // Create today's runs for routine items with checklists attached (idempotent).
+  const ensureRoutineRuns = async () => {
+    try {
+      const res = await fetch("/api/routine/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ today: format(new Date(), "yyyy-MM-dd") }),
+      });
+      if (!res.ok) return;
+      const { created, updated } = await res.json() as { created: number; updated: number };
+      if (created + updated > 0) void fetchTasks();
+    } catch { /* runs are retried on the next load */ }
+  };
+
+  // A run whose checklist is set to block completion keeps its routine item
+  // from being ticked until the required steps are done. Returns true if blocked.
+  const routineBlocked = (kind: RoutineRef["kind"], itemId: string, date: string) => {
+    const run = linkedRoutineTask(kind, itemId, date);
+    const gate = run && run.status !== "completed" ? checklistGate(run) : null;
+    if (!gate) return false;
+    toast.error(`${gate.remaining} required step${gate.remaining === 1 ? "" : "s"} left on ${gate.name}`);
+    playUncompleteSound();
+    return true;
+  };
+
   // The open task a routine occurrence was scheduled as, if any.
   const linkedRoutineTask = (kind: RoutineRef["kind"], itemId: string, date: string) =>
     tasks.find(t => t.routineRef?.kind === kind && t.routineRef.itemId === itemId && t.routineRef.date === date && !t.archivedAt);
@@ -1600,6 +1641,8 @@ export default function HomePage() {
   ].sort((a, b) => a.time - b.time);
 
   const handleToggleChecklistItem = async (id: string) => {
+    const current = checklistItems.find(i => i._id === id);
+    if (current && !current.completedDates.includes(todayStr) && routineBlocked("checklist", id, todayStr)) return;
     // Optimistic update
     setChecklistItems(prev =>
       prev.map(item => {
@@ -1625,11 +1668,16 @@ export default function HomePage() {
     }
 
     try {
-      await fetch("/api/checklist", {
+      const res = await fetch("/api/checklist", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ _id: id, date: todayStr, today: todayStr }),
       });
+      if (!res.ok) {
+        toast.error(((await res.json()) as { error?: string }).error ?? "Failed to update routine item");
+        void fetchChecklistItems();
+        return;
+      }
       // A task scheduled for this item follows the tick on the server.
       if (linkedRoutineTask("checklist", id, todayStr)) void fetchTasks();
     } catch {
@@ -1641,6 +1689,7 @@ export default function HomePage() {
   // Settle a carried-over miss: "complete" records the latest one as done late,
   // "dismiss" lets it go. Either way every earlier miss is resolved with it.
   const handleResolveMissed = async (item: ChecklistItem, date: string, resolve: "complete" | "dismiss") => {
+    if (resolve === "complete" && routineBlocked("checklist", item._id, date)) return;
     setChecklistItems(prev => prev.map(i => i._id !== item._id ? i : {
       ...i,
       caughtUpThrough: date,
@@ -1733,7 +1782,12 @@ export default function HomePage() {
 
   const handleUnscheduleRoutine = async (taskId: string) => {
     try {
-      const res = await fetch(`/api/tasks?id=${taskId}`, { method: "DELETE" });
+      // A run keeps its checklist progress: just take its time away. A plain
+      // scheduled task has nothing else to it, so it goes.
+      const hasChecklist = !!tasks.find(t => t._id === taskId)?.checklists?.length;
+      const res = hasChecklist
+        ? await fetch("/api/tasks", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ _id: taskId, dueDate: null }) })
+        : await fetch(`/api/tasks?id=${taskId}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       setRoutineSchedule(null);
       void fetchTasks();
@@ -1743,7 +1797,7 @@ export default function HomePage() {
   };
 
   const resetChecklistForm = () => {
-    setChecklistFormData({ title: "", description: "", frequency: "daily", daysOfWeek: [], carryOver: null });
+    setChecklistFormData({ title: "", description: "", frequency: "daily", daysOfWeek: [], carryOver: null, checklists: [] });
     setEditingChecklistItem(null);
     setShowChecklistForm(false);
   };
@@ -1789,12 +1843,14 @@ export default function HomePage() {
           frequency: checklistFormData.frequency,
           daysOfWeek: checklistFormData.frequency === "weekly" ? checklistFormData.daysOfWeek : undefined,
           carryOver: checklistFormData.carryOver ?? undefined,
+          checklists: checklistFormData.checklists,
         }),
       });
       if (response.ok) {
         const newItem = await response.json() as ChecklistItem;
         setChecklistItems(prev => [...prev, newItem]);
         resetChecklistForm();
+        if (newItem.checklists?.length) void ensureRoutineRuns();
         toast.success("Routine item added");
       }
     } catch {
@@ -1818,12 +1874,14 @@ export default function HomePage() {
           frequency: checklistFormData.frequency,
           daysOfWeek: checklistFormData.frequency === "weekly" ? checklistFormData.daysOfWeek : null,
           ...(checklistFormData.carryOver !== null ? { carryOver: checklistFormData.carryOver } : {}),
+          checklists: checklistFormData.checklists,
         }),
       });
       if (response.ok) {
         const updated = await response.json() as ChecklistItem;
         setChecklistItems(prev => prev.map(i => i._id === updated._id ? updated : i));
         resetChecklistForm();
+        if (updated.checklists?.length) void ensureRoutineRuns();
         toast.success("Routine item updated");
       }
     } catch {
@@ -1855,6 +1913,7 @@ export default function HomePage() {
       frequency: item.frequency,
       daysOfWeek: item.daysOfWeek ?? [],
       carryOver: item.carryOver ?? null,
+      checklists: item.checklists ?? [],
     });
     setShowChecklistForm(true);
   };
@@ -1878,11 +1937,12 @@ export default function HomePage() {
       const res = await fetch("/api/maintenance", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: maintenanceFormData.title.trim(), description: maintenanceFormData.description.trim() || undefined, intervalDays: maintenanceFormData.intervalDays, nextDueDate: nextDue }),
+        body: JSON.stringify({ title: maintenanceFormData.title.trim(), description: maintenanceFormData.description.trim() || undefined, intervalDays: maintenanceFormData.intervalDays, nextDueDate: nextDue, checklists: maintenanceFormData.checklists }),
       });
       if (res.ok) {
         await fetchMaintenanceItems();
-        setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "" });
+        if (maintenanceFormData.checklists.length) void ensureRoutineRuns();
+        setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
         setShowMaintenanceForm(false);
       }
     } catch { /* silently fail */ }
@@ -1899,12 +1959,14 @@ export default function HomePage() {
           title: maintenanceFormData.title.trim(),
           description: maintenanceFormData.description.trim() || null,
           intervalDays: maintenanceFormData.intervalDays,
+          checklists: maintenanceFormData.checklists,
           ...(maintenanceFormData.nextDueDate ? { nextDueDate: maintenanceFormData.nextDueDate } : {}),
         }),
       });
       if (res.ok) {
         await fetchMaintenanceItems();
-        setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "" });
+        if (maintenanceFormData.checklists.length) void ensureRoutineRuns();
+        setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
         setEditingMaintenanceItem(null);
         setShowMaintenanceForm(false);
       }
@@ -1920,21 +1982,25 @@ export default function HomePage() {
   };
 
   const handleMarkMaintenanceDone = async (id: string) => {
+    const m = maintenanceItems.find(i => i._id === id);
+    if (m && routineBlocked("maintenance", id, m.nextDueDate)) return;
     try {
       const res = await fetch("/api/maintenance", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _id: id }),
+        body: JSON.stringify({ _id: id, today: todayStr }),
       });
       if (res.ok) {
         await fetchMaintenanceItems();
         if (tasks.some(t => t.routineRef?.kind === "maintenance" && t.routineRef.itemId === id)) void fetchTasks();
+      } else {
+        toast.error(((await res.json()) as { error?: string }).error ?? "Couldn't mark it done");
       }
     } catch { /* silently fail */ }
   };
 
   const resetMaintenanceForm = () => {
-    setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "" });
+    setMaintenanceFormData({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
     setEditingMaintenanceItem(null);
     setShowMaintenanceForm(false);
   };
@@ -3338,6 +3404,8 @@ export default function HomePage() {
   // name of a checklist attached to it — otherwise searching a checklist name in
   // the palette blanks the matrix behind it.
   const filteredTasks = tasks.filter(task => {
+    // A routine run stays on the routine card until it's given a time.
+    if (task.routineRef && !task.dueDate) return false;
     const q = searchQuery.toLowerCase();
     return (
       task.title.toLowerCase().includes(q) ||
@@ -3682,6 +3750,44 @@ export default function HomePage() {
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   );
+
+  // Checklists attached to a routine or maintenance item, edited in its form.
+  // Each time the item comes up, a fresh copy of these goes onto that day's run.
+  const renderRoutineChecklistPicker = (value: RoutineChecklistRef[], onChange: (next: RoutineChecklistRef[]) => void) => {
+    const available = myndlistTemplates.filter(t => !value.some(v => v.sourceId === t.id));
+    return (
+      <div className="mb-3">
+        <div className="text-[11.5px] mb-1.5" style={{ color: "var(--muted)" }}>Checklist · a fresh copy comes up with it every time</div>
+        {value.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {value.map(c => (
+              <span key={c.sourceId} className="flex items-center gap-1.5 text-[12px] rounded-[8px]" style={{ padding: "4px 6px 4px 10px", background: "var(--chip)", color: "var(--ink2)" }}>
+                <ListChecks className="w-[12px] h-[12px]" style={{ color: "var(--muted2)" }} />
+                {c.name}
+                <button onClick={() => onChange(value.filter(v => v.sourceId !== c.sourceId))} title="Detach" style={{ color: "var(--muted2)" }}>
+                  <X className="w-[12px] h-[12px]" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        {myndlistConfigured === false ? (
+          <div className="text-[12px]" style={{ color: "var(--muted)" }}>Connect Myndlist in Settings to attach a checklist.</div>
+        ) : (
+          <select value="" disabled={myndlistLoading && myndlistTemplates.length === 0}
+            onFocus={() => void fetchMyndlistTemplates()}
+            onChange={(e) => {
+              const t = myndlistTemplates.find(x => x.id === e.target.value);
+              if (t) onChange([...value, { sourceId: t.id, name: t.name }]);
+            }}
+            className="w-full text-[13px] rounded-[10px] outline-none" style={{ padding: "9px 12px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink3)" }}>
+            <option value="">{myndlistLoading && myndlistTemplates.length === 0 ? "Loading checklists…" : myndlistError ? myndlistError : "+ Attach a checklist…"}</option>
+            {available.map(t => <option key={t.id} value={t.id}>{t.name} · {t.stepCount} steps</option>)}
+          </select>
+        )}
+      </div>
+    );
+  };
 
   // Small "i" affordance on a routine row — click to read that item's description.
   const renderDescriptionInfo = (title: string, description: string) => (
@@ -4852,6 +4958,24 @@ export default function HomePage() {
                       </button>
                     );
                   };
+                  // Step progress of this occurrence's run; opens its checklist.
+                  const runChip = (ref: RoutineRef) => {
+                    const run = linkedRoutineTask(ref.kind, ref.itemId, ref.date);
+                    if (!run?.checklists?.length) return null;
+                    const p = run.checklists.reduce((acc, c) => {
+                      const sp = stepProgress(c.steps);
+                      return { done: acc.done + sp.done + sp.optionalDone, total: acc.total + sp.total + sp.optionalTotal };
+                    }, { done: 0, total: 0 });
+                    const finished = run.status === "completed" || (p.total > 0 && p.done === p.total);
+                    return (
+                      <button onClick={() => void openTaskForEdit(run)} title={`Open ${run.checklists.map(c => c.name).join(", ")}`}
+                        className="flex items-center gap-1 text-[10px] px-[7px] py-px rounded-[5px] shrink-0 whitespace-nowrap tabular-nums"
+                        style={{ color: finished ? "var(--muted5)" : "var(--accent)", background: "var(--chip)" }}>
+                        <ListChecks className="w-[11px] h-[11px]" />
+                        {p.done}/{p.total}
+                      </button>
+                    );
+                  };
                   const schedulerPanel = (ref: RoutineRef) => {
                     const r = routineSchedule;
                     if (!r || r.kind !== ref.kind || r.itemId !== ref.itemId || r.date !== ref.date) return null;
@@ -4887,6 +5011,7 @@ export default function HomePage() {
                             {item.description && renderDescriptionInfo(item.title, item.description)}
                             {chip(missedLabel(missed, todayStr), "late", missed.length > 1 ? `Missed ${missed.map(d => relativeDayLabel(d, todayStr)).join(", ")}` : undefined)}
                             {cadence && chip(`↻ ${cadence}`)}
+                            {runChip(ref)}
                             {scheduleControl(ref, item.title)}
                             <button onClick={() => void handleResolveMissed(item, latest, "dismiss")} title="Let it go — stop carrying it"
                               className="shrink-0 p-0.5 rounded opacity-50 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
@@ -4918,6 +5043,7 @@ export default function HomePage() {
                                 {7 - recentMisses}/7
                               </span>
                             )}
+                            {runChip(ref)}
                             {!done && scheduleControl(ref, item.title)}
                           </div>
                           {schedulerPanel(ref)}
@@ -4939,6 +5065,7 @@ export default function HomePage() {
                               ? chip(`Late${maintenanceDaysLate(m) > 1 ? ` ${maintenanceDaysLate(m)}d` : ""}`, "late")
                               : chip("Due today"))}
                             {chip(`↻ ${intervalLabel(m.intervalDays)}`, "muted", m.lastCompletedDate ? `Last done ${m.lastCompletedDate}` : undefined)}
+                            {runChip(ref)}
                             {!done && scheduleControl(ref, m.title)}
                           </div>
                           {schedulerPanel(ref)}
@@ -5463,6 +5590,7 @@ export default function HomePage() {
                       ))}
                     </div>
                   )}
+                  {renderRoutineChecklistPicker(checklistFormData.checklists, (next) => setChecklistFormData((p) => ({ ...p, checklists: next })))}
                   {(() => {
                     const on = carriesOver({ frequency: checklistFormData.frequency, carryOver: checklistFormData.carryOver ?? undefined });
                     return (
@@ -5502,7 +5630,7 @@ export default function HomePage() {
                   <button onClick={() => void handleMarkMaintenanceDone(m._id)} className="text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Mark done</button>
                   <button onClick={() => {
                     setEditingMaintenanceItem(m);
-                    setMaintenanceFormData({ title: m.title, description: m.description ?? "", intervalDays: m.intervalDays, nextDueDate: m.nextDueDate });
+                    setMaintenanceFormData({ title: m.title, description: m.description ?? "", intervalDays: m.intervalDays, nextDueDate: m.nextDueDate, checklists: m.checklists ?? [] });
                     setShowMaintenanceForm(true);
                   }} style={{ color: "var(--muted2)" }} className="p-0.5"><Edit3 className="w-[15px] h-[15px]" /></button>
                   <button onClick={() => void handleDeleteMaintenanceItem(m._id)} style={{ color: "var(--tag-fg)" }} className="p-0.5"><Trash2 className="w-[15px] h-[15px]" /></button>
@@ -5522,6 +5650,7 @@ export default function HomePage() {
                         className="text-[12px] rounded-[8px]" style={{ padding: "6px 12px", color: maintenanceFormData.intervalDays === p.days ? "var(--btn-fg)" : "var(--accent)", background: maintenanceFormData.intervalDays === p.days ? "var(--pill-active)" : "var(--chip)" }}>{p.label}</button>
                     ))}
                   </div>
+                  {renderRoutineChecklistPicker(maintenanceFormData.checklists, (next) => setMaintenanceFormData((p) => ({ ...p, checklists: next })))}
                   <input type="date" value={maintenanceFormData.nextDueDate} onChange={(e) => setMaintenanceFormData((p) => ({ ...p, nextDueDate: e.target.value }))}
                     className="w-full text-[13.5px] rounded-[10px] outline-none mb-3" style={{ padding: "10px 14px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" }} />
                   <div className="flex gap-2.5">

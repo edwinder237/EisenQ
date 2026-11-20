@@ -4,7 +4,10 @@ import type { ChecklistItem } from "~/server/db/schema";
 import { ObjectId } from "mongodb";
 import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
-import { markChecklistOccurrence, setLinkedTasksDone } from "~/server/routine-links";
+import { markChecklistOccurrence, routineGateMessage, setLinkedTasksDone } from "~/server/routine-links";
+import { archiveDismissedRuns } from "~/server/routine-runs";
+
+const checklistRefsSchema = z.array(z.object({ sourceId: z.string().min(1).max(200), name: z.string().max(500) })).max(10);
 
 const createChecklistSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title too long"),
@@ -12,6 +15,7 @@ const createChecklistSchema = z.object({
   frequency: z.enum(["daily", "weekly"]),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
   carryOver: z.boolean().optional(),
+  checklists: checklistRefsSchema.optional(),
 });
 
 const updateChecklistSchema = z.object({
@@ -25,6 +29,7 @@ const updateChecklistSchema = z.object({
   // Undo of a resolved miss puts these back as they were
   caughtUpThrough: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   completedDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
+  checklists: checklistRefsSchema.optional(),
 });
 
 const toggleCompletionSchema = z.object({
@@ -85,6 +90,7 @@ export async function POST(request: NextRequest) {
       daysOfWeek: body.frequency === "weekly" ? (body.daysOfWeek ?? []) : undefined,
       completedDates: [],
       carryOver: body.carryOver,
+      checklists: body.checklists?.length ? body.checklists : undefined,
       sortOrder: count,
       userId,
       createdAt: new Date(),
@@ -238,10 +244,15 @@ export async function PATCH(request: NextRequest) {
           { $set: { caughtUpThrough: date, updatedAt: new Date() } }
         );
       }
+      await archiveDismissedRuns(userId, oid, date);
       return NextResponse.json({ completed: false });
     }
 
     const isCompleted = resolve === "complete" ? false : item.completedDates.includes(date);
+    if (!isCompleted) {
+      const blocked = await routineGateMessage(userId, "checklist", oid, date);
+      if (blocked) return NextResponse.json({ error: blocked, checklistBlocked: true }, { status: 400 });
+    }
     await markChecklistOccurrence(userId, oid, date, { done: !isCompleted, today });
     // A task scheduled for this occurrence follows the tick.
     await setLinkedTasksDone(userId, "checklist", oid, date, !isCompleted);

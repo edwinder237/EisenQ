@@ -3,13 +3,16 @@ import { maintenanceItemsCollection } from "~/server/db";
 import { ObjectId } from "mongodb";
 import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
-import { markMaintenanceDone } from "~/server/routine-links";
+import { markMaintenanceDone, routineGateMessage } from "~/server/routine-links";
+
+const checklistRefsSchema = z.array(z.object({ sourceId: z.string().min(1).max(200), name: z.string().max(500) })).max(10);
 
 const createSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title too long"),
   description: z.string().max(2000, "Description too long").optional(),
   intervalDays: z.number().int().min(1).max(3650),
   nextDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD"),
+  checklists: checklistRefsSchema.optional(),
 });
 
 const updateSchema = z.object({
@@ -18,6 +21,7 @@ const updateSchema = z.object({
   description: z.string().max(2000).nullable().optional(),
   intervalDays: z.number().int().min(1).max(3650).optional(),
   nextDueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  checklists: checklistRefsSchema.optional(),
 });
 
 export async function GET() {
@@ -115,12 +119,17 @@ export async function PATCH(request: NextRequest) {
     const { userId } = await auth();
     if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const body = z.object({ _id: z.string().min(1) }).safeParse(await request.json());
+    const body = z.object({
+      _id: z.string().min(1),
+      today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), // the person's local day
+    }).safeParse(await request.json());
     if (!body.success) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
 
     if (!ObjectId.isValid(body.data._id)) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
+    const blocked = await routineGateMessage(userId, "maintenance", new ObjectId(body.data._id), null);
+    if (blocked) return NextResponse.json({ error: blocked, checklistBlocked: true }, { status: 400 });
     // Also completes any task scheduled for this item.
-    const result = await markMaintenanceDone(userId, new ObjectId(body.data._id));
+    const result = await markMaintenanceDone(userId, new ObjectId(body.data._id), body.data.today);
     if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     return NextResponse.json(result);

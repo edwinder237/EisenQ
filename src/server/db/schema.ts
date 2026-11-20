@@ -121,6 +121,15 @@ export interface Goal {
 
 export type ChecklistFrequency = "daily" | "weekly";
 
+// A Myndlist checklist attached to a routine or maintenance item. Only the
+// reference is kept: each time the item comes up, a fresh copy of the steps is
+// made onto that occurrence's run (a task with a routineRef), so edits in
+// Myndlist reach the next run and past runs keep their own ticks.
+export interface RoutineChecklistRef {
+  sourceId: string;
+  name: string;   // shown in Manage without a round trip to Myndlist
+}
+
 export interface ChecklistItem {
   _id?: ObjectId;
   title: string;
@@ -132,6 +141,7 @@ export interface ChecklistItem {
   // means the default: weekly items carry over, daily ones don't.
   carryOver?: boolean;
   caughtUpThrough?: string;    // "YYYY-MM-DD": misses on or before this day are resolved
+  checklists?: RoutineChecklistRef[]; // copied fresh onto a run each time the item comes up
   sortOrder: number;
   userId: string;
   createdAt: Date;
@@ -145,6 +155,7 @@ export interface MaintenanceItem {
   intervalDays: number;         // e.g. 90 = every 3 months, 365 = yearly
   lastCompletedDate?: string;   // ISO date "YYYY-MM-DD"
   nextDueDate: string;          // ISO date "YYYY-MM-DD"
+  checklists?: RoutineChecklistRef[]; // copied fresh onto a run each time the item comes due
   userId: string;
   createdAt: Date;
   updatedAt: Date;

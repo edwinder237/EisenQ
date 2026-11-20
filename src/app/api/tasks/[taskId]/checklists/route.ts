@@ -2,15 +2,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { ObjectId } from "mongodb";
 import { z } from "zod";
-import { tasksCollection, userSettingsCollection } from "~/server/db";
-import type { TaskChecklist } from "~/server/db/schema";
-import {
-  loadMyndlistCredentials,
-  callMyndlist,
-  flattenChecklist,
-  copyStepsForAttach,
-  type MyndlistChecklist,
-} from "~/server/myndlist";
+import { tasksCollection } from "~/server/db";
+import { loadMyndlistCredentials, copyChecklistFromMyndlist } from "~/server/myndlist";
 
 // POST /api/tasks/[taskId]/checklists — attach a Myndlist checklist to a task.
 //
@@ -47,27 +40,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: "Connect Myndlist in Settings → Integrations first." }, { status: 400 });
     }
 
-    const result = await callMyndlist<{ checklist: MyndlistChecklist }>(
-      creds,
-      `/checklists/${encodeURIComponent(parsed.data.sourceId)}`
-    );
-    if (result.outcome !== "ok") {
-      const message = result.outcome === "http-error" ? result.message : "Couldn't reach Myndlist.";
-      return NextResponse.json({ error: message }, { status: 502 });
-    }
-
-    const flat = flattenChecklist(result.data.checklist);
-    const settings = await userSettingsCollection.findOne({ userId });
-
-    const checklist: TaskChecklist = {
-      id: crypto.randomUUID(),
-      sourceId: flat.id,
-      name: flat.name,
-      blockCompletion: settings?.checklistGates?.[flat.id] ?? false,
-      order: (task.checklists ?? []).length,
-      steps: copyStepsForAttach(flat),
-      attachedAt: new Date(),
-    };
+    const copied = await copyChecklistFromMyndlist(userId, creds, parsed.data.sourceId, (task.checklists ?? []).length);
+    if ("error" in copied) return NextResponse.json({ error: copied.error }, { status: 502 });
+    const { checklist } = copied;
 
     await tasksCollection.updateOne(
       { _id: new ObjectId(taskId), userId },

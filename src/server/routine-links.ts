@@ -1,6 +1,7 @@
 import type { ObjectId } from "mongodb";
 import { checklistItemsCollection, maintenanceItemsCollection, tasksCollection } from "~/server/db";
 import type { MaintenanceItem, RoutineRef } from "~/server/db/schema";
+import { requiredStepsLeft } from "~/lib/checklist-steps";
 
 // A routine item put on the schedule becomes a task carrying a routineRef.
 // The two stay in step whichever side is ticked: completing the task marks the
@@ -9,14 +10,17 @@ import type { MaintenanceItem, RoutineRef } from "~/server/db/schema";
 // two directions can never call each other in a loop.
 
 /** Resets a maintenance item's timer: done today, next due one interval out. */
-export async function markMaintenanceDone(userId: string, itemId: ObjectId): Promise<MaintenanceItem | null> {
+export async function markMaintenanceDone(
+  userId: string,
+  itemId: ObjectId,
+  localToday?: string, // the person's own "YYYY-MM-DD"; the server's UTC day can already be tomorrow
+): Promise<MaintenanceItem | null> {
   const item = await maintenanceItemsCollection.findOne({ _id: itemId, userId });
   if (!item) return null;
 
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0, 10);
-  const nextDue = new Date(today);
-  nextDue.setDate(nextDue.getDate() + item.intervalDays);
+  const todayStr = localToday ?? new Date().toISOString().slice(0, 10);
+  const nextDue = new Date(`${todayStr}T00:00:00Z`);
+  nextDue.setUTCDate(nextDue.getUTCDate() + item.intervalDays);
 
   const updated = await maintenanceItemsCollection.findOneAndUpdate(
     { _id: itemId, userId },
@@ -94,4 +98,29 @@ export async function assertOwnRoutineItem(userId: string, kind: RoutineRef["kin
   const coll = kind === "checklist" ? checklistItemsCollection : maintenanceItemsCollection;
   const found = await (coll as typeof checklistItemsCollection).countDocuments({ _id: itemId, userId }, { limit: 1 });
   return found > 0;
+}
+
+/**
+ * Why a routine occurrence can't be ticked yet: its run has a checklist set to
+ * block completion with required steps left. Null when it can be ticked.
+ */
+export async function routineGateMessage(
+  userId: string,
+  kind: RoutineRef["kind"],
+  itemId: ObjectId,
+  date: string | null,
+): Promise<string | null> {
+  const filter: Record<string, unknown> = {
+    userId, "routineRef.kind": kind, "routineRef.itemId": itemId, status: { $ne: "completed" },
+  };
+  if (date) filter["routineRef.date"] = date;
+  const runs = await tasksCollection.find(filter).toArray();
+  for (const run of runs) {
+    for (const c of run.checklists ?? []) {
+      if (!c.blockCompletion) continue;
+      const left = requiredStepsLeft(c.steps);
+      if (left > 0) return `${left} required step${left === 1 ? "" : "s"} left on ${c.name}`;
+    }
+  }
+  return null;
 }
