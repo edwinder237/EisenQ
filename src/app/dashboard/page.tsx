@@ -2374,8 +2374,10 @@ export default function HomePage() {
     }
   };
 
-  const handleUpdateTask = async () => {
-    if (!editingTask) return;
+  // Returns the saved task (or null on failure). `silent` skips the "updated"
+  // toast, for callers that follow the save with their own action.
+  const handleUpdateTask = async (opts: { silent?: boolean } = {}): Promise<Task | null> => {
+    if (!editingTask) return null;
 
     // Save returns the full task document and the client replaces state with it,
     // so any tick still in the debounce window would be silently discarded.
@@ -2443,7 +2445,8 @@ export default function HomePage() {
         // A changed soft-link shifts another task's subtask counts; reconcile from server.
         if (linkChanged) void fetchTasks();
         closeModal();
-        toast.success("Task updated successfully!");
+        if (!opts.silent) toast.success("Task updated successfully!");
+        return updatedTask;
       } else {
         toast.error("Failed to update task");
       }
@@ -2457,6 +2460,26 @@ export default function HomePage() {
         [formData.quadrant]: false 
       }));
     }
+    return null;
+  };
+
+  // "Mark done" / "Reopen" from the task editor: saves any edits first, so
+  // nothing typed is lost, then completes through the same path as the row's
+  // circle (checklist gate, auto-archive, sounds). The gate is checked before
+  // saving, and said out loud: the row hint isn't visible behind the editor.
+  const handleCompleteFromEditor = async () => {
+    if (!editingTask) return;
+    const current = tasks.find(t => t._id === editingTask._id) ?? editingTask;
+    if (current.status !== "completed") {
+      const gate = checklistGate(current);
+      if (gate) {
+        toast.error(`${gate.remaining} required step${gate.remaining === 1 ? "" : "s"} left on ${gate.name}`);
+        playUncompleteSound();
+        return;
+      }
+    }
+    const saved = await handleUpdateTask({ silent: true });
+    if (saved) await handleToggleComplete({ ...current, ...saved });
   };
 
   // Export the task being edited to a calendar provider / .ics, using its due
@@ -6420,9 +6443,18 @@ export default function HomePage() {
             {/* footer */}
             <div className="flex items-center justify-between gap-3 shrink-0" style={{ padding: "13px 22px", borderTop: "1px solid var(--line2)", background: "var(--form-bg)" }}>
               {editingTask ? (
-                <button onClick={() => void handleDeleteTask(editingTask)} className="text-[13px] font-medium px-1" style={{ color: "var(--tag-fg)" }}>
-                  Delete
-                </button>
+                <div className="flex items-center gap-4">
+                  <button onClick={() => void handleDeleteTask(editingTask)} className="text-[13px] font-medium px-1" style={{ color: "var(--tag-fg)" }}>
+                    Delete
+                  </button>
+                  <button onClick={() => void handleCompleteFromEditor()}
+                    disabled={!formData.title || (taskOperationLoading.updateTask ?? false)}
+                    className="inline-flex items-center gap-1.5 text-[13px] font-medium rounded-[10px] disabled:opacity-50"
+                    style={{ padding: "8px 14px", border: "1px solid var(--field-bd)", color: "var(--ink2)" }}>
+                    <CheckCircle2 className="w-[15px] h-[15px]" style={{ color: editingTask.status === "completed" ? "var(--muted3)" : "var(--accent)" }} />
+                    {editingTask.status === "completed" ? "Reopen" : "Mark done"}
+                  </button>
+                </div>
               ) : <span />}
               <div className="flex items-center gap-2">
                 <button onClick={closeModal} className="text-[13px] rounded-[10px]"
@@ -6430,7 +6462,7 @@ export default function HomePage() {
                   Cancel
                 </button>
                 <button
-                  onClick={editingTask ? handleUpdateTask : handleAddTask}
+                  onClick={() => void (editingTask ? handleUpdateTask() : handleAddTask())}
                   disabled={!formData.title || (taskOperationLoading.addTask ?? taskOperationLoading.updateTask)}
                   className="cta text-[13px] font-semibold rounded-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{ padding: "9px 22px", background: "var(--btn-primary)", color: "var(--btn-fg)" }}>
