@@ -4,12 +4,14 @@ import type { ChecklistItem } from "~/server/db/schema";
 import { ObjectId } from "mongodb";
 import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
+import { markChecklistOccurrence, setLinkedTasksDone } from "~/server/routine-links";
 
 const createChecklistSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title too long"),
   description: z.string().max(2000, "Description too long").optional(),
   frequency: z.enum(["daily", "weekly"]),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).optional(),
+  carryOver: z.boolean().optional(),
 });
 
 const updateChecklistSchema = z.object({
@@ -19,11 +21,19 @@ const updateChecklistSchema = z.object({
   frequency: z.enum(["daily", "weekly"]).optional(),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).nullable().optional(),
   sortOrder: z.number().int().min(0).optional(),
+  carryOver: z.boolean().optional(),
+  // Undo of a resolved miss puts these back as they were
+  caughtUpThrough: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  completedDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
 });
 
 const toggleCompletionSchema = z.object({
   _id: z.string().min(1),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Date must be YYYY-MM-DD format"),
+  // Settles a carried-over miss on `date` (and every earlier one): "complete"
+  // records it as done late, "dismiss" lets it go without marking it done.
+  resolve: z.enum(["complete", "dismiss"]).optional(),
+  today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), // the person's local day
 });
 
 export async function GET() {
@@ -74,6 +84,7 @@ export async function POST(request: NextRequest) {
       frequency: body.frequency,
       daysOfWeek: body.frequency === "weekly" ? (body.daysOfWeek ?? []) : undefined,
       completedDates: [],
+      carryOver: body.carryOver,
       sortOrder: count,
       userId,
       createdAt: new Date(),
@@ -107,7 +118,7 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { _id, daysOfWeek, description, ...restUpdateData } = parseResult.data;
+    const { _id, daysOfWeek, description, caughtUpThrough, ...restUpdateData } = parseResult.data;
 
     if (!ObjectId.isValid(_id)) {
       return NextResponse.json({ error: "Invalid checklist item ID format" }, { status: 400 });
@@ -133,6 +144,9 @@ export async function PUT(request: NextRequest) {
     } else if (description !== undefined) {
       updateOperation.$set.description = description;
     }
+
+    if (caughtUpThrough === null) unset.caughtUpThrough = "" as const;
+    else if (caughtUpThrough !== undefined) updateOperation.$set.caughtUpThrough = caughtUpThrough;
 
     if (Object.keys(unset).length > 0) {
       updateOperation.$unset = unset;
@@ -203,31 +217,34 @@ export async function PATCH(request: NextRequest) {
       );
     }
 
-    const { _id, date } = parseResult.data;
+    const { _id, date, resolve } = parseResult.data;
+    const today = parseResult.data.today ?? date;
 
     if (!ObjectId.isValid(_id)) {
       return NextResponse.json({ error: "Invalid checklist item ID format" }, { status: 400 });
     }
 
-    const item = await checklistItemsCollection.findOne({ _id: new ObjectId(_id), userId });
+    const oid = new ObjectId(_id);
+    const item = await checklistItemsCollection.findOne({ _id: oid, userId });
 
     if (!item) {
       return NextResponse.json({ error: "Checklist item not found" }, { status: 404 });
     }
 
-    const isCompleted = item.completedDates.includes(date);
-
-    if (isCompleted) {
-      await checklistItemsCollection.updateOne(
-        { _id: new ObjectId(_id), userId },
-        { $pull: { completedDates: date }, $set: { updatedAt: new Date() } }
-      );
-    } else {
-      await checklistItemsCollection.updateOne(
-        { _id: new ObjectId(_id), userId },
-        { $addToSet: { completedDates: date }, $set: { updatedAt: new Date() } }
-      );
+    if (resolve === "dismiss") {
+      if (!item.caughtUpThrough || item.caughtUpThrough < date) {
+        await checklistItemsCollection.updateOne(
+          { _id: oid, userId },
+          { $set: { caughtUpThrough: date, updatedAt: new Date() } }
+        );
+      }
+      return NextResponse.json({ completed: false });
     }
+
+    const isCompleted = resolve === "complete" ? false : item.completedDates.includes(date);
+    await markChecklistOccurrence(userId, oid, date, { done: !isCompleted, today });
+    // A task scheduled for this occurrence follows the tick.
+    await setLinkedTasksDone(userId, "checklist", oid, date, !isCompleted);
 
     return NextResponse.json({ completed: !isCompleted });
   } catch {

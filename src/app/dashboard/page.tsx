@@ -8,6 +8,7 @@ import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
 import type { AssistantRunView } from "~/lib/delegate-prototype";
+import { carriesOver, intervalLabel, missedDates, missedLabel, relativeDayLabel, weeklyLabel } from "~/lib/routine";
 
 // The Delegate quadrant with hand-offs: Assistant hand-offs are real (Claude
 // routine); household hand-offs are a prototype kept in localStorage.
@@ -30,6 +31,7 @@ import {
   CalendarDays,
   CalendarRange,
   CalendarPlus,
+  CalendarClock,
   Clock,
   ChevronLeft,
   ChevronRight,
@@ -130,6 +132,14 @@ interface Task {
   source?: { kind: "gmail" | "page" | "selection" | "agent"; title?: string; url?: string };
   // Set while the task is handed to the Assistant (a Claude routine); see DelegateQuadrant
   assistantRun?: AssistantRunView | null;
+  // Set when a routine item was put on the schedule; see routine-links
+  routineRef?: RoutineRef;
+}
+
+interface RoutineRef {
+  kind: "checklist" | "maintenance";
+  itemId: string;
+  date: string;
 }
 
 // A reusable checklist copied onto a task. Distinct from ChecklistItem below,
@@ -206,6 +216,8 @@ interface ChecklistItem {
   frequency: ChecklistFrequency;
   daysOfWeek?: number[];
   completedDates: string[];
+  carryOver?: boolean;
+  caughtUpThrough?: string;
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
@@ -587,7 +599,10 @@ export default function HomePage() {
     description: "",
     frequency: "daily" as ChecklistFrequency,
     daysOfWeek: [] as number[],
+    carryOver: null as boolean | null, // null = the default for its frequency
   });
+  // Inline "put it on the schedule" panel under a routine row. Keyed by kind:itemId:date.
+  const [routineSchedule, setRoutineSchedule] = useState<(RoutineRef & { title: string; taskId?: string; value: string }) | null>(null);
 
   // Calm Editorial redesign drawers
   const [routineDrawerOpen, setRoutineDrawerOpen] = useState(false);
@@ -1547,6 +1562,18 @@ export default function HomePage() {
   const routineTotal = todaysChecklistItems.length + dueMaintenanceItems.length;
   const routineDone = completedCount + dueMaintenanceItems.filter(isMaintenanceDoneToday).length;
 
+  // Past occurrences that weren't done and still carry over (weekly by default).
+  // They sit on the card until done or dismissed; they're extra, not part of
+  // today's progress.
+  const carriedChecklistItems = checklistItems
+    .filter(carriesOver)
+    .map(item => ({ item, missed: missedDates(item, todayStr) }))
+    .filter(c => c.missed.length > 0);
+
+  // The open task a routine occurrence was scheduled as, if any.
+  const linkedRoutineTask = (kind: RoutineRef["kind"], itemId: string, date: string) =>
+    tasks.find(t => t.routineRef?.kind === kind && t.routineRef.itemId === itemId && t.routineRef.date === date && !t.archivedAt);
+
   // Today's app tasks (with a due date) shown alongside calendar events in the side panel
   const todaysScheduledTasks = tasks
     .filter(t => t.dueDate && isSameDay(new Date(t.dueDate), new Date()))
@@ -1601,16 +1628,122 @@ export default function HomePage() {
       await fetch("/api/checklist", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _id: id, date: todayStr }),
+        body: JSON.stringify({ _id: id, date: todayStr, today: todayStr }),
       });
+      // A task scheduled for this item follows the tick on the server.
+      if (linkedRoutineTask("checklist", id, todayStr)) void fetchTasks();
     } catch {
       // Revert on failure
       void fetchChecklistItems();
     }
   };
 
+  // Settle a carried-over miss: "complete" records the latest one as done late,
+  // "dismiss" lets it go. Either way every earlier miss is resolved with it.
+  const handleResolveMissed = async (item: ChecklistItem, date: string, resolve: "complete" | "dismiss") => {
+    setChecklistItems(prev => prev.map(i => i._id !== item._id ? i : {
+      ...i,
+      caughtUpThrough: date,
+      completedDates: resolve === "complete" ? [...i.completedDates, date] : i.completedDates,
+    }));
+    if (resolve === "complete") playCompletionSound();
+    try {
+      const res = await fetch("/api/checklist", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _id: item._id, date, resolve, today: todayStr }),
+      });
+      if (!res.ok) throw new Error();
+      if (linkedRoutineTask("checklist", item._id, date)) void fetchTasks();
+      toast.success((t) => (
+        <span className="flex items-center gap-3">
+          {resolve === "complete" ? `${item.title} — caught up` : `${item.title} — let go`}
+          <button className="font-semibold" style={{ color: "var(--accent)" }}
+            onClick={() => { toast.dismiss(t.id); void undoResolveMissed(item); }}>Undo</button>
+        </span>
+      ), { duration: 6000 });
+    } catch {
+      void fetchChecklistItems();
+      toast.error("Failed to update routine item");
+    }
+  };
+
+  // Put the item back as it was before it was resolved.
+  const undoResolveMissed = async (before: ChecklistItem) => {
+    setChecklistItems(prev => prev.map(i => i._id === before._id ? before : i));
+    try {
+      await fetch("/api/checklist", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _id: before._id, caughtUpThrough: before.caughtUpThrough ?? null, completedDates: before.completedDates }),
+      });
+    } finally {
+      void fetchChecklistItems();
+    }
+  };
+
+  // Default time for a new schedule slot: the next full hour today.
+  const nextHourLocal = () => {
+    const d = new Date();
+    d.setHours(d.getHours() + 1, 0, 0, 0);
+    return format(d, "yyyy-MM-dd'T'HH:mm");
+  };
+
+  const openRoutineScheduler = (ref: RoutineRef, title: string) => {
+    const existing = linkedRoutineTask(ref.kind, ref.itemId, ref.date);
+    setRoutineSchedule({
+      ...ref,
+      title,
+      taskId: existing?._id,
+      value: existing?.dueDate ? format(new Date(existing.dueDate), "yyyy-MM-dd'T'HH:mm") : nextHourLocal(),
+    });
+  };
+
+  // Creates (or moves) the task a routine occurrence is scheduled as. It lands
+  // in Schedule and on Today's schedule; ticking either side ticks both.
+  const handleSaveRoutineSchedule = async () => {
+    if (!routineSchedule?.value) return;
+    const dueDate = new Date(routineSchedule.value).toISOString();
+    try {
+      const res = routineSchedule.taskId
+        ? await fetch("/api/tasks", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ _id: routineSchedule.taskId, dueDate }),
+          })
+        : await fetch("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: routineSchedule.title,
+              quadrant: "important-not-urgent",
+              priority: "medium",
+              dueDate,
+              routineRef: { kind: routineSchedule.kind, itemId: routineSchedule.itemId, date: routineSchedule.date },
+            }),
+          });
+      if (!res.ok) throw new Error();
+      toast.success(`Scheduled for ${format(new Date(dueDate), "EEE h:mm a")}`);
+      setRoutineSchedule(null);
+      void fetchTasks();
+    } catch {
+      toast.error("Couldn't schedule it");
+    }
+  };
+
+  const handleUnscheduleRoutine = async (taskId: string) => {
+    try {
+      const res = await fetch(`/api/tasks?id=${taskId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error();
+      setRoutineSchedule(null);
+      void fetchTasks();
+    } catch {
+      toast.error("Couldn't remove it from the schedule");
+    }
+  };
+
   const resetChecklistForm = () => {
-    setChecklistFormData({ title: "", description: "", frequency: "daily", daysOfWeek: [] });
+    setChecklistFormData({ title: "", description: "", frequency: "daily", daysOfWeek: [], carryOver: null });
     setEditingChecklistItem(null);
     setShowChecklistForm(false);
   };
@@ -1655,6 +1788,7 @@ export default function HomePage() {
           description: checklistFormData.description.trim() || undefined,
           frequency: checklistFormData.frequency,
           daysOfWeek: checklistFormData.frequency === "weekly" ? checklistFormData.daysOfWeek : undefined,
+          carryOver: checklistFormData.carryOver ?? undefined,
         }),
       });
       if (response.ok) {
@@ -1683,6 +1817,7 @@ export default function HomePage() {
           description: checklistFormData.description.trim() || null,
           frequency: checklistFormData.frequency,
           daysOfWeek: checklistFormData.frequency === "weekly" ? checklistFormData.daysOfWeek : null,
+          ...(checklistFormData.carryOver !== null ? { carryOver: checklistFormData.carryOver } : {}),
         }),
       });
       if (response.ok) {
@@ -1719,6 +1854,7 @@ export default function HomePage() {
       description: item.description ?? "",
       frequency: item.frequency,
       daysOfWeek: item.daysOfWeek ?? [],
+      carryOver: item.carryOver ?? null,
     });
     setShowChecklistForm(true);
   };
@@ -1790,7 +1926,10 @@ export default function HomePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ _id: id }),
       });
-      if (res.ok) await fetchMaintenanceItems();
+      if (res.ok) {
+        await fetchMaintenanceItems();
+        if (tasks.some(t => t.routineRef?.kind === "maintenance" && t.routineRef.itemId === id)) void fetchTasks();
+      }
     } catch { /* silently fail */ }
   };
 
@@ -2854,6 +2993,11 @@ export default function HomePage() {
           // With auto-archive on, a completed task leaves the board immediately
           // instead of sitting crossed off at the bottom.
           if (autoArchiveCompleted) void handleArchiveTask({ ...task, status: "completed" }, { silent: true });
+        }
+        // The routine item it was scheduled from was ticked on the server too.
+        if (task.routineRef) {
+          void fetchChecklistItems();
+          void fetchMaintenanceItems();
         }
       } else {
         toast.error("Failed to update task");
@@ -4680,36 +4824,124 @@ export default function HomePage() {
                     first column before continuing in the second, rather than
                     zig-zagging across rows. */}
                 {(() => {
+                  const chip = (text: string, tone: "muted" | "late" = "muted", title?: string) => (
+                    <span title={title} className="text-[10px] px-[7px] py-px rounded-[5px] shrink-0 whitespace-nowrap"
+                      style={tone === "late" ? { color: "var(--tag-fg)", background: "var(--tag-bg)" } : { color: "var(--muted5)", background: "var(--chip)" }}>
+                      {text}
+                    </span>
+                  );
+                  // Scheduled time if it's on the schedule, else a calendar button on hover.
+                  const scheduleControl = (ref: RoutineRef, title: string) => {
+                    const linked = linkedRoutineTask(ref.kind, ref.itemId, ref.date);
+                    if (linked?.dueDate && linked.status !== "completed") {
+                      const due = new Date(linked.dueDate);
+                      return (
+                        <button onClick={() => openRoutineScheduler(ref, title)} title="On your schedule — click to move it"
+                          className="flex items-center gap-1 text-[10px] px-[7px] py-px rounded-[5px] shrink-0 whitespace-nowrap"
+                          style={{ color: "var(--accent)", background: "var(--chip)" }}>
+                          <CalendarClock className="w-[11px] h-[11px]" />
+                          {format(due, todayStr === format(due, "yyyy-MM-dd") ? "h:mm a" : "EEE h:mm a")}
+                        </button>
+                      );
+                    }
+                    return (
+                      <button onClick={() => openRoutineScheduler(ref, title)} title="Put it on your schedule"
+                        className="shrink-0 p-0.5 rounded opacity-50 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                        style={{ color: "var(--muted2)" }}>
+                        <CalendarPlus className="w-[13px] h-[13px]" />
+                      </button>
+                    );
+                  };
+                  const schedulerPanel = (ref: RoutineRef) => {
+                    const r = routineSchedule;
+                    if (!r || r.kind !== ref.kind || r.itemId !== ref.itemId || r.date !== ref.date) return null;
+                    return (
+                      <div className="flex flex-wrap items-center gap-2 mt-2 ml-[25px] rounded-[10px]" style={{ padding: "8px 10px", background: "var(--form-bg)", border: "1px solid var(--form-bd)" }}>
+                        <input type="datetime-local" value={r.value} autoFocus
+                          onChange={(e) => setRoutineSchedule(prev => prev ? { ...prev, value: e.target.value } : prev)}
+                          onKeyDown={(e) => { if (e.key === "Enter") void handleSaveRoutineSchedule(); if (e.key === "Escape") setRoutineSchedule(null); }}
+                          className="text-[12.5px] rounded-[8px] outline-none" style={{ padding: "5px 8px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)", colorScheme: "inherit" }} />
+                        <button onClick={() => void handleSaveRoutineSchedule()} disabled={!r.value}
+                          className="text-[12px] font-semibold rounded-[8px] disabled:opacity-50" style={{ padding: "5px 12px", color: "var(--btn-fg)", background: "var(--btn-primary)" }}>
+                          {r.taskId ? "Move" : "Schedule"}
+                        </button>
+                        {r.taskId && (
+                          <button onClick={() => void handleUnscheduleRoutine(r.taskId!)} className="text-[12px]" style={{ color: "var(--tag-fg)" }}>Unschedule</button>
+                        )}
+                        <button onClick={() => setRoutineSchedule(null)} className="text-[12px]" style={{ color: "var(--muted)" }}>Cancel</button>
+                      </div>
+                    );
+                  };
                   const rows = [
+                    // Carried over from earlier days: done late, or let go.
+                    ...carriedChecklistItems.map(({ item, missed }) => {
+                      const latest = missed[0]!;
+                      const ref: RoutineRef = { kind: "checklist", itemId: item._id, date: latest };
+                      const cadence = item.frequency === "weekly" ? weeklyLabel(item.daysOfWeek) : "Daily";
+                      return (
+                        <div key={`missed-${item._id}`} className="group flex flex-col">
+                          <div className="flex items-center gap-[10px]">
+                            <span className="w-[15px] shrink-0" />
+                            <span className="qcheck" title="Done — mark it caught up" onClick={() => void handleResolveMissed(item, latest, "complete")} />
+                            <span className="text-[13.5px]" style={{ color: "var(--ink2)" }}>{item.title}</span>
+                            {item.description && renderDescriptionInfo(item.title, item.description)}
+                            {chip(missedLabel(missed, todayStr), "late", missed.length > 1 ? `Missed ${missed.map(d => relativeDayLabel(d, todayStr)).join(", ")}` : undefined)}
+                            {cadence && chip(`↻ ${cadence}`)}
+                            {scheduleControl(ref, item.title)}
+                            <button onClick={() => void handleResolveMissed(item, latest, "dismiss")} title="Let it go — stop carrying it"
+                              className="shrink-0 p-0.5 rounded opacity-50 sm:opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                              style={{ color: "var(--muted2)" }}>
+                              <X className="w-[13px] h-[13px]" />
+                            </button>
+                          </div>
+                          {schedulerPanel(ref)}
+                        </div>
+                      );
+                    }),
                     ...todaysChecklistItems.map((item, idx) => {
                       const done = isChecklistItemCompletedToday(item);
+                      const ref: RoutineRef = { kind: "checklist", itemId: item._id, date: todayStr };
+                      const cadence = item.frequency === "weekly" ? weeklyLabel(item.daysOfWeek) : null;
+                      // Daily items don't carry over; a quiet count of recent misses instead.
+                      const recentMisses = item.frequency === "daily" && !carriesOver(item)
+                        ? missedDates({ ...item, caughtUpThrough: undefined }, todayStr, 7).length : 0;
                       return (
-                        <div key={item._id} className="flex items-center gap-[10px]">
-                          <span className="text-[11px] tabular-nums w-[15px] text-right shrink-0" style={{ color: "var(--muted4)" }}>{idx + 1}</span>
-                          <span className={cn("qcheck", done && "checked")} onClick={() => void handleToggleChecklistItem(item._id)} />
-                          <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{item.title}</span>
-                          {item.description && renderDescriptionInfo(item.title, item.description)}
+                        <div key={item._id} className="group flex flex-col">
+                          <div className="flex items-center gap-[10px]">
+                            <span className="text-[11px] tabular-nums w-[15px] text-right shrink-0" style={{ color: "var(--muted4)" }}>{idx + 1}</span>
+                            <span className={cn("qcheck", done && "checked")} onClick={() => void handleToggleChecklistItem(item._id)} />
+                            <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{item.title}</span>
+                            {item.description && renderDescriptionInfo(item.title, item.description)}
+                            {cadence && chip(`↻ ${cadence}`)}
+                            {recentMisses > 0 && (
+                              <span className="text-[10.5px] shrink-0 whitespace-nowrap" style={{ color: "var(--muted4)" }} title="Days missed in the last week">
+                                {7 - recentMisses}/7
+                              </span>
+                            )}
+                            {!done && scheduleControl(ref, item.title)}
+                          </div>
+                          {schedulerPanel(ref)}
                         </div>
                       );
                     }),
                     ...dueMaintenanceItems.map((m) => {
                       const done = isMaintenanceDoneToday(m);
                       const late = !done && maintenanceDaysLate(m) > 0;
+                      const ref: RoutineRef = { kind: "maintenance", itemId: m._id, date: m.nextDueDate };
                       return (
-                        <div key={m._id} className="flex items-center gap-[10px]">
-                          <span className="w-[15px] shrink-0" />
-                          <span className={cn("qcheck", done && "checked")} onClick={() => { if (!done) void handleMarkMaintenanceDone(m._id); }} />
-                          <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{m.title}</span>
-                          {m.description && renderDescriptionInfo(m.title, m.description)}
-                          {!done && (
-                            late ? (
-                              <span className="text-[10px] px-[7px] py-px rounded-[5px] shrink-0" style={{ color: "var(--tag-fg)", background: "var(--tag-bg)" }}>
-                                Late{maintenanceDaysLate(m) > 1 ? ` ${maintenanceDaysLate(m)}d` : ""}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] px-[7px] py-px rounded-[5px] shrink-0" style={{ color: "var(--muted5)", background: "var(--chip)" }}>Due</span>
-                            )
-                          )}
+                        <div key={m._id} className="group flex flex-col">
+                          <div className="flex items-center gap-[10px]">
+                            <span className="w-[15px] shrink-0" />
+                            <span className={cn("qcheck", done && "checked")} onClick={() => { if (!done) void handleMarkMaintenanceDone(m._id); }} />
+                            <span className="text-[13.5px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{m.title}</span>
+                            {m.description && renderDescriptionInfo(m.title, m.description)}
+                            {!done && (late
+                              ? chip(`Late${maintenanceDaysLate(m) > 1 ? ` ${maintenanceDaysLate(m)}d` : ""}`, "late")
+                              : chip("Due today"))}
+                            {chip(`↻ ${intervalLabel(m.intervalDays)}`, "muted", m.lastCompletedDate ? `Last done ${m.lastCompletedDate}` : undefined)}
+                            {!done && scheduleControl(ref, m.title)}
+                          </div>
+                          {schedulerPanel(ref)}
                         </div>
                       );
                     }),
@@ -4750,7 +4982,7 @@ export default function HomePage() {
                           <span className="text-[11px] w-[52px] text-right pt-0.5 shrink-0" style={{ color: "var(--muted2)" }}>{t.dueDate ? format(new Date(t.dueDate), "h:mm") : ""}</span>
                           <div className="flex-1 pb-3 pl-[14px] ml-0.5" style={{ borderLeft: `2px solid ${doFirst ? "var(--q-do-first)" : "var(--form-bd)"}` }}>
                             <div className="flex items-center gap-2">
-                              <span className="text-[13.5px]" style={{ color: "var(--ink)" }}>{t.title}</span>
+                              <span className="text-[13.5px]" style={t.status === "completed" ? { color: "var(--strike)", textDecoration: "line-through" } : { color: "var(--ink)" }}>{t.title}</span>
                               {doFirst && <span className="text-[10px] px-[7px] py-px rounded-[5px]" style={{ color: "var(--tag-fg)", background: "var(--tag-bg)" }}>Do First</span>}
                             </div>
                             <div className="text-[11.5px]" style={{ color: "var(--muted)" }}>
@@ -5182,12 +5414,14 @@ export default function HomePage() {
                 return visible.map((item, idx) => {
                 const done = isChecklistItemCompletedToday(item);
                 const badge = item.frequency === "daily" ? "daily" : (item.daysOfWeek?.length ? item.daysOfWeek.map((d) => DAY_LABELS[d]).join(", ") : "weekly");
+                const carries = carriesOver(item);
                 return (
                   <div key={item._id} className="flex items-center gap-[10px] rounded-[10px]" style={{ padding: "10px 8px" }}>
                     <span className="text-[11px] tabular-nums w-[16px] text-right shrink-0" style={{ color: "var(--muted4)" }}>{idx + 1}</span>
                     <span className={cn("qcheck", done && "checked")} onClick={() => void handleToggleChecklistItem(item._id)} />
                     <span className="flex-1 text-[14px]" style={{ color: done ? "var(--strike)" : "var(--ink2)", textDecoration: done ? "line-through" : undefined }}>{item.title}</span>
                     <span className="text-[11px] rounded-[6px]" style={{ padding: "2px 9px", color: "var(--muted)", background: "var(--chip)" }}>{badge}</span>
+                    {carries && <span title="Carries over if missed" className="text-[11px]" style={{ color: "var(--muted4)" }}>↪</span>}
                     <div className="flex flex-col shrink-0">
                       <button onClick={() => void handleReorderChecklistItem(item, "up", visible)} disabled={idx === 0}
                         title="Move up" className={cn("p-0 leading-none", idx === 0 ? "opacity-25" : "opacity-60 hover:opacity-100")} style={{ color: "var(--muted2)" }}>
@@ -5229,6 +5463,21 @@ export default function HomePage() {
                       ))}
                     </div>
                   )}
+                  {(() => {
+                    const on = carriesOver({ frequency: checklistFormData.frequency, carryOver: checklistFormData.carryOver ?? undefined });
+                    return (
+                      <label className="flex items-start gap-2.5 mb-3 cursor-pointer select-none">
+                        <input type="checkbox" checked={on} className="mt-[3px]" style={{ accentColor: "var(--pill-active)" }}
+                          onChange={(e) => setChecklistFormData((p) => ({ ...p, carryOver: e.target.checked }))} />
+                        <span className="text-[12.5px]" style={{ color: "var(--ink3)" }}>
+                          Carry over if missed
+                          <span className="block text-[11.5px]" style={{ color: "var(--muted)" }}>
+                            A missed day stays on your routine until you do it or let it go.
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })()}
                   <div className="flex gap-2.5 mt-1">
                     <button onClick={editingChecklistItem ? handleUpdateChecklistItem : handleAddChecklistItem} disabled={!checklistFormData.title.trim() || checklistLoading}
                       className="cta text-[13px] font-semibold rounded-[10px] disabled:opacity-50" style={{ padding: "9px 20px", color: "var(--btn-fg)", background: "var(--btn-primary)" }}>{checklistLoading ? "Saving…" : editingChecklistItem ? "Update" : "Add item"}</button>

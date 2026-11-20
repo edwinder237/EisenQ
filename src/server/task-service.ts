@@ -4,6 +4,7 @@ import { tasksCollection, goalsCollection } from "~/server/db";
 import type { Task, TaskQuadrant, TaskPriority, TaskSource } from "~/server/db/schema";
 import { requiredStepsLeft } from "~/lib/checklist-steps";
 import { zonedWallTimeToUtc } from "~/server/timezone";
+import { assertOwnRoutineItem, syncRoutineFromTask } from "~/server/routine-links";
 
 // The rules every task write obeys, wherever it comes from: the dashboard
 // (/api/tasks), the in-app assistant (/api/assistant/apply) and AI connectors
@@ -34,6 +35,12 @@ export const createTaskSchema = z.object({
   duration: z.number().int().min(1).max(1440).optional(),
   parentTaskId: z.string().optional(),  // For subtask creation
   goalId: z.string().optional(),        // Optional link to a weekly/monthly goal
+  // A routine item put on the schedule: completing either side completes both
+  routineRef: z.object({
+    kind: z.enum(["checklist", "maintenance"]),
+    itemId: z.string(),
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).optional(),
 });
 
 export const updateTaskSchema = z.object({
@@ -119,6 +126,15 @@ export async function createTask(userId: string, input: CreateTaskInput): Promis
 
   const goalId = input.goalId ? await assertOwnGoal(userId, input.goalId) : undefined;
 
+  let routineRef: Task["routineRef"];
+  if (input.routineRef) {
+    const itemId = toObjectId(input.routineRef.itemId, "routine item");
+    if (!(await assertOwnRoutineItem(userId, input.routineRef.kind, itemId))) {
+      throw new TaskServiceError("Routine item not found", 404);
+    }
+    routineRef = { kind: input.routineRef.kind, itemId, date: input.routineRef.date };
+  }
+
   const now = new Date();
   const newTask: Task = {
     title: input.title,
@@ -131,6 +147,7 @@ export async function createTask(userId: string, input: CreateTaskInput): Promis
     parentTaskId,
     goalId,
     source: input.source,
+    routineRef,
     createdAt: now,
     updatedAt: now,
     quadrantSince: now,
@@ -174,6 +191,8 @@ export async function updateTask(userId: string, id: string, input: UpdateTaskIn
   const { dueDate, duration, goalId, linkedParentId, archived, completedAt, ...rest } = input;
 
   if (rest.status === "completed") await assertChecklistGate(userId, oid);
+  // Read before writing so a routine link only syncs on a real status change.
+  const before = rest.status ? await tasksCollection.findOne({ _id: oid, userId }) : null;
 
   // Drop keys passed as undefined: the driver would store them as null and
   // wipe the field. Absent means "leave it alone", whoever the caller is.
@@ -239,6 +258,11 @@ export async function updateTask(userId: string, id: string, input: UpdateTaskIn
       { parentTaskId: oid, userId },
       { $set: { quadrant: rest.quadrant, updatedAt: new Date() } },
     );
+  }
+
+  // A task scheduled from a routine item ticks (or unticks) that item too.
+  if (before?.routineRef && rest.status && (before.status === "completed") !== (rest.status === "completed")) {
+    await syncRoutineFromTask(userId, before.routineRef, rest.status === "completed");
   }
 
   const updated = await tasksCollection.findOne({ _id: oid, userId });

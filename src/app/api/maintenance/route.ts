@@ -3,6 +3,7 @@ import { maintenanceItemsCollection } from "~/server/db";
 import { ObjectId } from "mongodb";
 import { auth } from "@clerk/nextjs/server";
 import { z } from "zod";
+import { markMaintenanceDone } from "~/server/routine-links";
 
 const createSchema = z.object({
   title: z.string().min(1, "Title is required").max(200, "Title too long"),
@@ -117,23 +118,10 @@ export async function PATCH(request: NextRequest) {
     const body = z.object({ _id: z.string().min(1) }).safeParse(await request.json());
     if (!body.success) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
 
-    const item = await maintenanceItemsCollection.findOne({
-      _id: new ObjectId(body.data._id),
-      userId,
-    });
-    if (!item) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
-    const nextDue = new Date(today);
-    nextDue.setDate(nextDue.getDate() + item.intervalDays);
-    const nextDueStr = nextDue.toISOString().slice(0, 10);
-
-    const result = await maintenanceItemsCollection.findOneAndUpdate(
-      { _id: new ObjectId(body.data._id), userId },
-      { $set: { lastCompletedDate: todayStr, nextDueDate: nextDueStr, updatedAt: new Date() } },
-      { returnDocument: "after" }
-    );
+    if (!ObjectId.isValid(body.data._id)) return NextResponse.json({ error: "Invalid input" }, { status: 400 });
+    // Also completes any task scheduled for this item.
+    const result = await markMaintenanceDone(userId, new ObjectId(body.data._id));
+    if (!result) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
     return NextResponse.json(result);
   } catch {

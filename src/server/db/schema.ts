@@ -70,6 +70,16 @@ export interface Task {
   checklists?: TaskChecklist[]; // Reusable checklists copied in from Myndlist; never surface as tasks
   source?: TaskSource;      // Set only by the browser capture extension
   assistantRun?: AssistantRun; // Set while the task is handed to the Assistant (a Claude routine)
+  routineRef?: RoutineRef;  // Set when a routine item was put on the schedule; completing one completes the other
+}
+
+// Links a scheduled task to one occurrence of a routine item. `date` is the
+// occurrence ("YYYY-MM-DD"): the day a checklist item was due, or a maintenance
+// item's nextDueDate when it was scheduled.
+export interface RoutineRef {
+  kind: "checklist" | "maintenance";
+  itemId: ObjectId;
+  date: string;
 }
 
 // Who does a checklist step in the Delegate quadrant relay. Household members
@@ -118,6 +128,10 @@ export interface ChecklistItem {
   frequency: ChecklistFrequency;
   daysOfWeek?: number[];       // 0=Sunday..6=Saturday, only for weekly
   completedDates: string[];    // Array of "YYYY-MM-DD" strings
+  // Missed occurrences stay on the routine card until done or dismissed. Unset
+  // means the default: weekly items carry over, daily ones don't.
+  carryOver?: boolean;
+  caughtUpThrough?: string;    // "YYYY-MM-DD": misses on or before this day are resolved
   sortOrder: number;
   userId: string;
   createdAt: Date;
