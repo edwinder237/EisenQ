@@ -27,6 +27,8 @@ const isPublicRoute = createRouteMatcher([
   "/api/mcp",
   // RFC 9728 metadata telling those apps where to sign in. Public by design.
   "/.well-known/oauth-protected-resource(.*)",
+  // Clerk's authorization-server metadata, mirrored for older MCP clients.
+  "/.well-known/oauth-authorization-server",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {
