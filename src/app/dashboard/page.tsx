@@ -4834,6 +4834,12 @@ export default function HomePage() {
         <div className="flex flex-wrap items-baseline gap-3 mt-2 mb-[18px]">
           <span style={{ fontFamily: "var(--font-serif)" }} className="text-[23px] md:text-[26px]">Priority Matrix</span>
           <span className="text-[13px]" style={{ color: "var(--muted)" }}>four quadrants, one clear next move each</span>
+          {searchQuery.trim() && (
+            <span className="text-[13px] inline-flex items-center gap-2 rounded-[8px]" style={{ padding: "3px 10px", background: "var(--chip)", color: "var(--ink2)" }}>
+              Filtered by “{searchQuery.trim()}”
+              <button onClick={() => setSearchQuery("")} className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>Show all</button>
+            </span>
+          )}
         </div>
         {isLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-[22px]">
@@ -4851,7 +4857,11 @@ export default function HomePage() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-[22px]">
             {MATRIX_ORDER.map((quadrant) => {
-              const meta = MATRIX_META[quadrant];
+              // While a search filters the matrix, an empty quadrant means "no
+              // match", not "nothing to do"; say so rather than the calm default.
+              const meta = searchQuery.trim()
+                ? { ...MATRIX_META[quadrant], emptyTitle: `No matches for “${searchQuery.trim()}”.`, emptySub: "Choose Show all to see every task." }
+                : MATRIX_META[quadrant];
               const { nextAction, upNext, cleared } = getQuadrantView(quadrant);
               const quickVal = quickTaskInputs[quadrant];
               if (DELEGATE_PROTOTYPE && quadrant === "urgent-not-important") {
@@ -5792,7 +5802,7 @@ export default function HomePage() {
                           <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-[0.12em]" style={{ color: "var(--muted2)" }}>{meta.name} · {rows.length}</div>
                           {rows.map((t) => (
                             <button key={t._id}
-                              onClick={() => { setSearchOpen(false); void openTaskForEdit(t); }}
+                              onClick={() => { setSearchOpen(false); setSearchQuery(""); void openTaskForEdit(t); }}
                               className="hovrow w-full flex items-center gap-3 px-4 py-2 text-left">
                               <span className="w-[7px] h-[7px] rounded-full shrink-0" style={{ background: meta.color }} />
                               <span className="flex-1 text-[14px] truncate" style={{ color: t.status === "completed" ? "var(--strike)" : "var(--ink2)", textDecoration: t.status === "completed" ? "line-through" : undefined }}>{t.title}</span>
