@@ -7,6 +7,7 @@ import { AssistantPanel, type AssistantSuggestion } from "~/components/Assistant
 import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
+import { PlanningGrid } from "~/components/PlanningGrid";
 import type { AssistantRunView } from "~/lib/delegate-prototype";
 import { carriesOver, intervalLabel, missedDates, missedLabel, relativeDayLabel, weeklyLabel } from "~/lib/routine";
 
@@ -30,6 +31,7 @@ import {
   X,
   CalendarDays,
   CalendarRange,
+  Columns2,
   CalendarPlus,
   CalendarClock,
   Clock,
@@ -105,7 +107,7 @@ import { useAudioFeedback } from "~/hooks/useAudioFeedback";
 type TaskQuadrant = "urgent-important" | "important-not-urgent" | "urgent-not-important" | "not-urgent-not-important";
 type TaskPriority = "high" | "medium" | "low";
 type TaskStatus = "pending" | "in-progress" | "completed";
-type CalendarView = "day" | "week" | "month";
+type CalendarView = "day" | "grid" | "week" | "month";
 
 interface Task {
   _id: string;
@@ -476,6 +478,15 @@ export default function HomePage() {
 
   // Calendar state
   const [calendarView, setCalendarView] = useState<CalendarView>("day");
+  // Grid view shows one or two days side by side; remembered per browser
+  const [gridDays, setGridDays] = useState<1 | 2>(1);
+  useEffect(() => {
+    try { if (localStorage.getItem("eisenq.gridDays") === "2") setGridDays(2); } catch { /* storage unavailable */ }
+  }, []);
+  const changeGridDays = (n: 1 | 2) => {
+    setGridDays(n);
+    try { localStorage.setItem("eisenq.gridDays", String(n)); } catch { /* storage unavailable */ }
+  };
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [isCalendarDrawerOpen, setIsCalendarDrawerOpen] = useState(false);
   const [isAssistantOpen, setIsAssistantOpen] = useState(false);
@@ -653,6 +664,42 @@ export default function HomePage() {
       priority: task.priority,
       date: taskDate,
       goalId: task.goalId ?? "",
+    });
+    setIsCalendarTaskModalOpen(true);
+  };
+
+  // Planning grid: put a task at a time (or move/resize it). Optimistic.
+  const scheduleTaskAt = async (task: Task, start: Date, duration: number) => {
+    const before = tasks.find(t => t._id === task._id);
+    const dueDate = start.toISOString();
+    setTasks(prev => prev.map(t => t._id === task._id ? { ...t, dueDate, duration } : t));
+    try {
+      const res = await fetch("/api/tasks", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _id: task._id, dueDate, duration }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const updated = await res.json() as Task;
+      setTasks(prev => prev.map(t => t._id === updated._id ? updated : t));
+      toast.success(`${task.title} · ${format(start, "EEE h:mm a")}`);
+    } catch {
+      if (before) setTasks(prev => prev.map(t => t._id === before._id ? before : t));
+      toast.error("Couldn't schedule that task");
+    }
+  };
+
+  const openCalendarTaskForCreateAt = (start: Date) => {
+    setEditingCalendarTask(null);
+    setCalendarTaskForm({
+      title: "",
+      description: "",
+      time: format(start, "HH:mm"),
+      duration: 30,
+      quadrant: "important-not-urgent",
+      priority: "medium",
+      date: start,
+      goalId: "",
     });
     setIsCalendarTaskModalOpen(true);
   };
@@ -861,7 +908,7 @@ export default function HomePage() {
   };
 
   const navigateCalendar = (direction: "prev" | "next") => {
-    if (calendarView === "day") {
+    if (calendarView === "day" || calendarView === "grid") {
       setSelectedDate(direction === "prev" ? subDays(selectedDate, 1) : addDays(selectedDate, 1));
     } else if (calendarView === "week") {
       setSelectedDate(direction === "prev" ? subWeeks(selectedDate, 1) : addWeeks(selectedDate, 1));
@@ -1526,6 +1573,9 @@ export default function HomePage() {
     if (calendarView === "day") {
       rangeStart = startOfDay(selectedDate);
       rangeEnd = endOfDay(selectedDate);
+    } else if (calendarView === "grid") {
+      rangeStart = startOfDay(selectedDate);
+      rangeEnd = endOfDay(addDays(selectedDate, gridDays - 1));
     } else if (calendarView === "week") {
       rangeStart = startOfWeek(selectedDate, { weekStartsOn: 0 });
       rangeEnd = endOfWeek(selectedDate, { weekStartsOn: 0 });
@@ -1537,7 +1587,7 @@ export default function HomePage() {
     const controller = new AbortController();
     void fetchPlanningEvents(icalUrls, rangeStart, rangeEnd, controller.signal);
     return () => controller.abort();
-  }, [isCalendarDrawerOpen, calendarView, selectedDate, icalUrls, fetchPlanningEvents]);
+  }, [isCalendarDrawerOpen, calendarView, gridDays, selectedDate, icalUrls, fetchPlanningEvents]);
 
   // Checklist functions
   const fetchChecklistItems = async () => {
@@ -4147,6 +4197,18 @@ export default function HomePage() {
                     My Day
                   </button>
                   <button
+                    onClick={() => setCalendarView("grid")}
+                    className={cn(
+                      "flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2",
+                      calendarView === "grid"
+                        ? "bg-[var(--btn-primary)] text-[var(--btn-fg)]"
+                        : "text-[var(--ink3)] hover:text-[var(--ink)]"
+                    )}
+                  >
+                    <Columns2 className="w-4 h-4" />
+                    Grid
+                  </button>
+                  <button
                     onClick={() => setCalendarView("week")}
                     className={cn(
                       "flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors flex items-center justify-center gap-2",
@@ -4189,11 +4251,14 @@ export default function HomePage() {
                   <div className="text-center">
                     <h3 className="font-semibold text-lg flex items-center justify-center gap-2">
                       {calendarView === "day" && format(selectedDate, "EEEE, MMMM d, yyyy")}
+                      {calendarView === "grid" && (gridDays === 1
+                        ? format(selectedDate, "EEEE, MMMM d, yyyy")
+                        : `${format(selectedDate, "EEE MMM d")} – ${format(addDays(selectedDate, 1), "EEE MMM d")}`)}
                       {calendarView === "week" && `${format(startOfWeek(selectedDate), "MMM d")} - ${format(endOfWeek(selectedDate), "MMM d, yyyy")}`}
                       {calendarView === "month" && format(selectedDate, "MMMM yyyy")}
                       {planningLoading && <Loader2 className="w-4 h-4 animate-spin text-[var(--muted)]" />}
                     </h3>
-                    {isToday(selectedDate) && calendarView === "day" && (
+                    {isToday(selectedDate) && (calendarView === "day" || calendarView === "grid") && (
                       <span className="text-xs text-[var(--accent)] font-medium">Today</span>
                     )}
                   </div>
@@ -4333,6 +4398,39 @@ export default function HomePage() {
                   </div>
                   );
                 })()}
+
+                {/* Grid View */}
+                {calendarView === "grid" && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs text-[var(--muted)]">Click a free slot to plan it · drag a task to move it</p>
+                      <div className="flex rounded-md p-0.5 bg-[var(--chip)] text-xs">
+                        {([1, 2] as const).map(n => (
+                          <button
+                            key={n}
+                            onClick={() => changeGridDays(n)}
+                            className={cn(
+                              "px-2.5 py-1 rounded font-medium transition-colors",
+                              gridDays === n ? "bg-[var(--btn-primary)] text-[var(--btn-fg)]" : "text-[var(--ink3)] hover:text-[var(--ink)]"
+                            )}
+                          >
+                            {n === 1 ? "1 day" : "2 days"}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <PlanningGrid
+                      days={Array.from({ length: gridDays }, (_, i) => addDays(startOfDay(selectedDate), i))}
+                      events={planningEvents}
+                      tasks={tasks}
+                      goals={goals}
+                      loading={planningLoading && icalUrls.length > 0}
+                      onSchedule={scheduleTaskAt}
+                      onOpenTask={openCalendarTaskForEdit}
+                      onCreateAt={openCalendarTaskForCreateAt}
+                    />
+                  </div>
+                )}
 
                 {/* My Week View */}
                 {calendarView === "week" && (
