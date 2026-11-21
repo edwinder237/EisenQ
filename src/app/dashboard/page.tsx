@@ -631,6 +631,8 @@ export default function HomePage() {
 
   // Calm Editorial redesign drawers
   const [routineDrawerOpen, setRoutineDrawerOpen] = useState(false);
+  // Missed routine items sit in a collapsed "Catch up" line, apart from today's list.
+  const [catchUpOpen, setCatchUpOpen] = useState(false);
   const [paymentsDrawerOpen, setPaymentsDrawerOpen] = useState(false);
 
   // Goals state
@@ -5099,9 +5101,10 @@ export default function HomePage() {
                       </div>
                     );
                   };
-                  const rows = [
-                    // Carried over from earlier days: done late, or let go.
-                    ...carriedChecklistItems.map(({ item, missed }) => {
+                  // Carried over from earlier days: done late, or let go. Kept out of
+                  // today's list so a glance shows what to do now; they live in
+                  // the "Catch up" line below instead.
+                  const missedRows = carriedChecklistItems.map(({ item, missed }) => {
                       const latest = missed[0]!;
                       const ref: RoutineRef = { kind: "checklist", itemId: item._id, date: latest };
                       const cadence = item.frequency === "weekly" ? weeklyLabel(item.daysOfWeek) : "Daily";
@@ -5113,7 +5116,7 @@ export default function HomePage() {
                             <div className={ROW_BODY}>
                             <span className={ROW_TITLE} style={{ color: "var(--ink2)" }}>{item.title}</span>
                             {item.description && renderDescriptionInfo(item.title, item.description)}
-                            {chip(missedLabel(missed, todayStr), "late", missed.length > 1 ? `Missed ${missed.map(d => relativeDayLabel(d, todayStr)).join(", ")}` : undefined)}
+                            {chip(missedLabel(missed, todayStr), "muted", missed.length > 1 ? `Missed ${missed.map(d => relativeDayLabel(d, todayStr)).join(", ")}` : undefined)}
                             {cadence && chip(`↻ ${cadence}`)}
                             {runChip(ref)}
                             {scheduleControl(ref, item.title)}
@@ -5127,7 +5130,8 @@ export default function HomePage() {
                           {schedulerPanel(ref)}
                         </div>
                       );
-                    }),
+                    });
+                  const rows = [
                     ...todaysChecklistItems.map((item, idx) => {
                       const done = isChecklistItemCompletedToday(item);
                       const ref: RoutineRef = { kind: "checklist", itemId: item._id, date: todayStr };
@@ -5183,13 +5187,39 @@ export default function HomePage() {
                     }),
                   ];
                   const half = Math.ceil(rows.length / 2);
+                  const missedCount = carriedChecklistItems.length;
                   return (
+                    <>
+                    {rows.length > 0 && (
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-[18px]">
                       <div className="flex flex-col gap-[18px] min-w-0">{rows.slice(0, half)}</div>
                       {rows.length > half && (
                         <div className="flex flex-col gap-[18px] min-w-0">{rows.slice(half)}</div>
                       )}
                     </div>
+                    )}
+                    {missedCount > 0 && (
+                      <div className={rows.length > 0 ? "mt-[22px] pt-[14px]" : ""} style={rows.length > 0 ? { borderTop: "1px solid var(--line2)" } : undefined}>
+                        <button onClick={() => setCatchUpOpen(v => !v)} aria-expanded={catchUpOpen}
+                          className="w-full flex items-center gap-2 text-left min-w-0">
+                          <span className="w-[6px] h-[6px] rounded-full shrink-0" style={{ background: "var(--tag-fg)" }} />
+                          <span className="text-[12.5px] font-semibold shrink-0" style={{ color: "var(--ink3)" }}>Catch up</span>
+                          <span className="text-[12px] shrink-0 tabular-nums" style={{ color: "var(--muted)" }}>· {missedCount} missed</span>
+                          {!catchUpOpen && (
+                            <span className="text-[12px] truncate min-w-0 hidden sm:inline" style={{ color: "var(--muted4)" }}>
+                              {carriedChecklistItems.map(c => c.item.title).join(", ")}
+                            </span>
+                          )}
+                          <span className="ml-auto text-[12px] shrink-0" style={{ color: "var(--accent)" }}>{catchUpOpen ? "Hide" : "Show ›"}</span>
+                        </button>
+                        {catchUpOpen && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-10 gap-y-[14px] mt-[14px]">
+                            {missedRows}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    </>
                   );
                 })()}
               </>
