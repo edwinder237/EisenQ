@@ -5757,52 +5757,110 @@ export default function HomePage() {
             </div>
           )}
 
-          {checklistTab === "maintenance" && (
-            <div style={{ padding: "14px 20px 20px" }} className="flex flex-col gap-2">
-              {maintenanceItems.length === 0 && <div className="text-[13.5px] px-2 py-2" style={{ color: "var(--muted)" }}>No maintenance items yet.</div>}
-              {maintenanceItems.map((m) => (
-                <div key={m._id} className="flex items-center gap-3 rounded-[11px]" style={{ padding: "12px 14px", background: "var(--field)", border: "1px solid var(--field-bd)" }}>
-                  <div className="flex-1">
-                    <div className="text-[14px]" style={{ color: "var(--ink)" }}>{m.title}</div>
-                    <div className="text-[11.5px]" style={{ color: "var(--muted)" }}>every {m.intervalDays} days · due {format(new Date(m.nextDueDate), "MMM d")}</div>
-                  </div>
-                  <button onClick={() => void handleMarkMaintenanceDone(m._id)} className="text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Mark done</button>
-                  <button onClick={() => {
-                    setEditingMaintenanceItem(m);
-                    setMaintenanceFormData({ title: m.title, description: m.description ?? "", intervalDays: m.intervalDays, nextDueDate: m.nextDueDate, checklists: m.checklists ?? [] });
-                    setShowMaintenanceForm(true);
-                  }} style={{ color: "var(--muted2)" }} className="p-0.5"><Edit3 className="w-[15px] h-[15px]" /></button>
-                  <button onClick={() => void handleDeleteMaintenanceItem(m._id)} style={{ color: "var(--tag-fg)" }} className="p-0.5"><Trash2 className="w-[15px] h-[15px]" /></button>
-                </div>
-              ))}
-              {showMaintenanceForm ? (
-                <div className="rounded-[14px]" style={{ padding: "16px", background: "var(--form-bg)", border: "1px solid var(--form-bd)" }}>
+          {checklistTab === "maintenance" && (() => {
+            // One row per item, soonest due first. The row is the edit target;
+            // the circle marks it done. Delete lives inside the editor, so the
+            // list carries one action per row instead of three.
+            const sorted = [...maintenanceItems].sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+            const label = (t: string) => (
+              <div className="text-[11px] uppercase tracking-[0.08em] mb-1.5" style={{ color: "var(--muted)" }}>{t}</div>
+            );
+            const field = { padding: "10px 13px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" } as const;
+            const isPreset = INTERVAL_PRESETS.some((p) => p.days === maintenanceFormData.intervalDays);
+            const form = (editing: MaintenanceItem | null) => (
+              <div className="rounded-[12px]" style={{ padding: "16px", background: "var(--form-bg)", border: "1px solid var(--form-bd)" }}>
+                <div className="mb-3.5">
+                  {label("Name")}
                   <input type="text" autoFocus placeholder="e.g. Replace furnace filter" value={maintenanceFormData.title}
                     onChange={(e) => setMaintenanceFormData((p) => ({ ...p, title: e.target.value }))}
-                    className="w-full text-[13.5px] rounded-[10px] outline-none mb-2.5" style={{ padding: "11px 14px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" }} />
-                  <textarea placeholder="Description · optional — shown from the routine card" value={maintenanceFormData.description} rows={2}
-                    onChange={(e) => setMaintenanceFormData((p) => ({ ...p, description: e.target.value }))}
-                    className="w-full text-[13.5px] rounded-[10px] outline-none mb-2.5 resize-y" style={{ padding: "11px 14px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" }} />
-                  <div className="flex flex-wrap gap-1.5 mb-2.5">
+                    onKeyDown={(e) => { if (e.key === "Enter" && maintenanceFormData.title.trim()) void (editing ? handleUpdateMaintenanceItem() : handleAddMaintenanceItem()); if (e.key === "Escape") resetMaintenanceForm(); }}
+                    className="w-full text-[13.5px] rounded-[10px] outline-none" style={field} />
+                </div>
+                <div className="mb-3.5">
+                  {label("Repeats")}
+                  <div className="flex flex-wrap gap-1.5">
                     {INTERVAL_PRESETS.map((p) => (
                       <button key={p.label} onClick={() => setMaintenanceFormData((f) => ({ ...f, intervalDays: p.days }))}
-                        className="text-[12px] rounded-[8px]" style={{ padding: "6px 12px", color: maintenanceFormData.intervalDays === p.days ? "var(--btn-fg)" : "var(--accent)", background: maintenanceFormData.intervalDays === p.days ? "var(--pill-active)" : "var(--chip)" }}>{p.label}</button>
+                        className="text-[12.5px] rounded-[8px]" style={{ padding: "6px 12px", fontWeight: maintenanceFormData.intervalDays === p.days ? 600 : 400, color: maintenanceFormData.intervalDays === p.days ? "var(--btn-fg)" : "var(--ink3)", background: maintenanceFormData.intervalDays === p.days ? "var(--pill-active)" : "var(--chip)" }}>{p.label}</button>
                     ))}
-                  </div>
-                  {renderRoutineChecklistPicker(maintenanceFormData.checklists, (next) => setMaintenanceFormData((p) => ({ ...p, checklists: next })))}
-                  <input type="date" value={maintenanceFormData.nextDueDate} onChange={(e) => setMaintenanceFormData((p) => ({ ...p, nextDueDate: e.target.value }))}
-                    className="w-full text-[13.5px] rounded-[10px] outline-none mb-3" style={{ padding: "10px 14px", background: "var(--field)", border: "1px solid var(--field-bd)", color: "var(--ink)" }} />
-                  <div className="flex gap-2.5">
-                    <button onClick={editingMaintenanceItem ? handleUpdateMaintenanceItem : handleAddMaintenanceItem} disabled={!maintenanceFormData.title.trim()}
-                      className="cta text-[13px] font-semibold rounded-[10px] disabled:opacity-50" style={{ padding: "9px 20px", color: "var(--btn-fg)", background: "var(--btn-primary)" }}>{editingMaintenanceItem ? "Update" : "Add"}</button>
-                    <button onClick={resetMaintenanceForm} className="text-[13px]" style={{ padding: "9px 16px", color: "var(--accent)" }}>Cancel</button>
+                    {!isPreset && (
+                      <span className="text-[12.5px] rounded-[8px]" style={{ padding: "6px 12px", fontWeight: 600, color: "var(--btn-fg)", background: "var(--pill-active)" }}>{intervalLabel(maintenanceFormData.intervalDays)}</span>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <button onClick={() => setShowMaintenanceForm(true)} className="hovrow text-[13px] text-center rounded-[11px]" style={{ padding: "11px", border: "1px dashed var(--check-bd)", color: "var(--muted5)" }}>+ Add a maintenance item</button>
-              )}
-            </div>
-          )}
+                <div className="mb-3.5">
+                  {label("Next due")}
+                  <input type="date" value={maintenanceFormData.nextDueDate} onChange={(e) => setMaintenanceFormData((p) => ({ ...p, nextDueDate: e.target.value }))}
+                    className="w-full text-[13.5px] rounded-[10px] outline-none" style={field} />
+                  <div className="text-[11.5px] mt-1" style={{ color: "var(--muted)" }}>
+                    {editing?.lastCompletedDate
+                      ? `Last done ${format(parseYmd(editing.lastCompletedDate), "MMM d, yyyy")}. Marking it done moves this forward automatically.`
+                      : editing ? "Marking it done moves this forward automatically." : "Leave empty to start one interval from today."}
+                  </div>
+                </div>
+                <div className="mb-3.5">
+                  {label("Notes · optional")}
+                  <textarea placeholder="Shown from the routine card" value={maintenanceFormData.description} rows={2}
+                    onChange={(e) => setMaintenanceFormData((p) => ({ ...p, description: e.target.value }))}
+                    className="w-full text-[13.5px] rounded-[10px] outline-none resize-y" style={field} />
+                </div>
+                <div className="mb-1">
+                  {label("Checklist · optional")}
+                  {renderRoutineChecklistPicker(maintenanceFormData.checklists, (next) => setMaintenanceFormData((p) => ({ ...p, checklists: next })))}
+                </div>
+                <div className="flex items-center gap-2.5 mt-2">
+                  <button onClick={editing ? handleUpdateMaintenanceItem : handleAddMaintenanceItem} disabled={!maintenanceFormData.title.trim()}
+                    className="cta text-[13px] font-semibold rounded-[10px] disabled:opacity-50" style={{ padding: "9px 20px", color: "var(--btn-fg)", background: "var(--btn-primary)" }}>{editing ? "Save" : "Add"}</button>
+                  <button onClick={resetMaintenanceForm} className="text-[13px]" style={{ padding: "9px 12px", color: "var(--ink3)" }}>Cancel</button>
+                  {editing && (
+                    <button onClick={() => { if (confirm(`Delete "${editing.title}"?`)) { void handleDeleteMaintenanceItem(editing._id); resetMaintenanceForm(); } }}
+                      className="ml-auto text-[12.5px]" style={{ color: "var(--tag-fg)" }}>Delete</button>
+                  )}
+                </div>
+              </div>
+            );
+            return (
+              <div style={{ padding: "14px 20px 20px" }} className="flex flex-col gap-2">
+                {sorted.length === 0 && !showMaintenanceForm && (
+                  <div className="text-[13.5px] px-2 py-2" style={{ color: "var(--muted)" }}>Things that come back every few months: filters, renewals, check-ups.</div>
+                )}
+                {sorted.map((m) => {
+                  if (editingMaintenanceItem?._id === m._id && showMaintenanceForm) return <div key={m._id}>{form(m)}</div>;
+                  const late = maintenanceDaysLate(m);
+                  const doneToday = isMaintenanceDoneToday(m);
+                  const dueText = late > 0
+                    ? `${late} day${late === 1 ? "" : "s"} late`
+                    : late === 0 ? "Due today" : `Due ${format(parseYmd(m.nextDueDate), "MMM d")}`;
+                  return (
+                    <div key={m._id} className="hovrow flex items-center gap-3 rounded-[11px] cursor-pointer"
+                      style={{ padding: "12px 14px", background: "var(--field)", border: "1px solid var(--field-bd)" }}
+                      onClick={() => {
+                        setEditingMaintenanceItem(m);
+                        setMaintenanceFormData({ title: m.title, description: m.description ?? "", intervalDays: m.intervalDays, nextDueDate: m.nextDueDate, checklists: m.checklists ?? [] });
+                        setShowMaintenanceForm(true);
+                      }}>
+                      <span className={cn("qcheck", doneToday && "checked")}
+                        title={doneToday ? "Done today" : `Mark done — next due in ${intervalLabel(m.intervalDays).toLowerCase()}`}
+                        onClick={(e) => { e.stopPropagation(); if (!doneToday) void handleMarkMaintenanceDone(m._id); }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[14px] truncate" style={{ color: doneToday ? "var(--strike)" : "var(--ink)", textDecoration: doneToday ? "line-through" : undefined }}>{m.title}</div>
+                        <div className="text-[11.5px] mt-0.5" style={{ color: "var(--muted)" }}>
+                          {intervalLabel(m.intervalDays)} ·{" "}
+                          <span style={{ color: late > 0 && !doneToday ? "var(--tag-fg)" : undefined }}>{doneToday ? "Done today" : dueText}</span>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-[15px] h-[15px] shrink-0" style={{ color: "var(--muted3)" }} />
+                    </div>
+                  );
+                })}
+                {showMaintenanceForm && !editingMaintenanceItem ? (
+                  form(null)
+                ) : (
+                  <button onClick={() => { resetMaintenanceForm(); setShowMaintenanceForm(true); }} className="hovrow text-[13px] text-center rounded-[11px]" style={{ padding: "11px", border: "1px dashed var(--check-bd)", color: "var(--muted5)" }}>+ Add a maintenance item</button>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 
