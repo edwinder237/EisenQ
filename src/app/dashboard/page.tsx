@@ -370,6 +370,15 @@ const INTEGRATION_HELP_ANCHOR: Record<IntegrationView, string> = {
   cashfold: "cashfold",
   myndlist: "myndlist",
 };
+// Category tabs above the Integrations list.
+const INTEGRATION_CATEGORIES = [
+  { id: "all", label: "All" },
+  { id: "ai", label: "AI & agents" },
+  { id: "calendar", label: "Calendar" },
+  { id: "finance", label: "Finance" },
+  { id: "tools", label: "Tools" },
+] as const;
+type IntegrationCategory = (typeof INTEGRATION_CATEGORIES)[number]["id"];
 const INTEGRATION_TITLES: Record<IntegrationView, string> = {
   ai: "AI connectors",
   assistant: "Claude assistant",
@@ -534,6 +543,7 @@ export default function HomePage() {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   // Which integration's page is open in Settings → Integrations; null shows the list.
   const [integrationView, setIntegrationView] = useState<IntegrationView | null>(null);
+  const [integrationCategory, setIntegrationCategory] = useState<IntegrationCategory>("all");
   const [financeApiUrl, setFinanceApiUrl] = useState("");
   const [financeApiKey, setFinanceApiKey] = useState("");
   const [draftFinanceUrl, setDraftFinanceUrl] = useState("");
@@ -7209,18 +7219,33 @@ export default function HomePage() {
               <div className="flex-1 min-h-0 overflow-y-auto" style={{ padding: "20px 24px" }}>
               {settingsSection === "integrations" && !integrationView && (() => {
                 // Every connection in one list: what it does, and whether it's on.
-                const rows: { id: IntegrationView | "extension"; name: string; desc: string; status: string; on: boolean }[] = [
-                  { id: "ai", name: "AI connectors", desc: "Let Claude, ChatGPT and other AI apps work with your tasks.", status: mcpConfig.enabled ? "On" : "Off", on: mcpConfig.enabled },
-                  { id: "assistant", name: "Claude assistant", desc: "Prioritization suggestions inside EisenQ, on your Claude key.", status: anthropicApiKey ? "Connected" : "Not set up", on: !!anthropicApiKey },
-                  { id: "gemini", name: "Google Gemini", desc: "What-to-wear line and deadline suggestions for captures.", status: geminiApiKey ? "Connected" : "Not set up", on: !!geminiApiKey },
-                  { id: "calendar", name: "Calendar feeds", desc: "Today's events from Google, Apple or Outlook calendars.", status: icalUrls.length ? `${icalUrls.length} feed${icalUrls.length === 1 ? "" : "s"}` : "Not set up", on: icalUrls.length > 0 },
-                  { id: "cashfold", name: "CashFold", desc: "Payments due today, above the Priority Matrix.", status: financeApiUrl ? "Connected" : "Not set up", on: !!financeApiUrl },
-                  { id: "myndlist", name: "Myndlist", desc: "Reusable checklists to attach to tasks.", status: myndlistApiUrl ? "Connected" : "Not set up", on: !!myndlistApiUrl },
-                  { id: "extension", name: "Chrome extension", desc: "Turn any page, selection or Gmail thread into a task.", status: "Set up ↗", on: false },
+                const rows: { id: IntegrationView | "extension"; cat: Exclude<IntegrationCategory, "all">; name: string; desc: string; status: string; on: boolean }[] = [
+                  { id: "ai", cat: "ai", name: "AI connectors", desc: "Let Claude, ChatGPT and other AI apps work with your tasks.", status: mcpConfig.enabled ? "On" : "Off", on: mcpConfig.enabled },
+                  { id: "assistant", cat: "ai", name: "Claude assistant", desc: "Prioritization suggestions inside EisenQ, on your Claude key.", status: anthropicApiKey ? "Connected" : "Not set up", on: !!anthropicApiKey },
+                  { id: "gemini", cat: "ai", name: "Google Gemini", desc: "What-to-wear line and deadline suggestions for captures.", status: geminiApiKey ? "Connected" : "Not set up", on: !!geminiApiKey },
+                  { id: "calendar", cat: "calendar", name: "Calendar feeds", desc: "Today's events from Google, Apple or Outlook calendars.", status: icalUrls.length ? `${icalUrls.length} feed${icalUrls.length === 1 ? "" : "s"}` : "Not set up", on: icalUrls.length > 0 },
+                  { id: "cashfold", cat: "finance", name: "CashFold", desc: "Payments due today, above the Priority Matrix.", status: financeApiUrl ? "Connected" : "Not set up", on: !!financeApiUrl },
+                  { id: "myndlist", cat: "tools", name: "Myndlist", desc: "Reusable checklists to attach to tasks.", status: myndlistApiUrl ? "Connected" : "Not set up", on: !!myndlistApiUrl },
+                  { id: "extension", cat: "tools", name: "Chrome extension", desc: "Turn any page, selection or Gmail thread into a task.", status: "Set up ↗", on: false },
                 ];
+                const shown = integrationCategory === "all" ? rows : rows.filter((r) => r.cat === integrationCategory);
                 return (
                   <div className="flex flex-col gap-2">
-                    {rows.map((r) => {
+                    {/* Category tabs; scroll sideways on narrow screens rather than wrap. */}
+                    <div className="flex gap-1.5 overflow-x-auto -mx-1 px-1 pb-1 mb-1" role="tablist" aria-label="Integration categories">
+                      {INTEGRATION_CATEGORIES.map((c) => {
+                        const active = integrationCategory === c.id;
+                        const count = c.id === "all" ? rows.length : rows.filter((r) => r.cat === c.id).length;
+                        return (
+                          <button key={c.id} role="tab" aria-selected={active} onClick={() => setIntegrationCategory(c.id)}
+                            className="shrink-0 whitespace-nowrap text-[12.5px] rounded-[9px]"
+                            style={{ padding: "6px 12px", fontWeight: active ? 600 : 400, color: active ? "var(--btn-fg)" : "var(--ink3)", background: active ? "var(--pill-active)" : "var(--chip)" }}>
+                            {c.label}{c.id !== "all" && <span className="ml-1 tabular-nums" style={{ opacity: 0.6 }}>{count}</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {shown.map((r) => {
                       const inner = (
                         <>
                           <div className="flex-1 min-w-0">
