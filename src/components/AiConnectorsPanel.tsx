@@ -5,7 +5,7 @@ import toast from "react-hot-toast";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { friendlyAppName } from "~/lib/task-source";
 
-// Settings → AI connectors. The configuration (switch, permissions,
+// Settings → Integrations → AI connectors. The configuration (switch, permissions,
 // preferences) is a draft owned by the dashboard and saved with the rest of
 // Settings. Connected apps and activity are live: they load when the tab opens,
 // and revoking applies immediately rather than waiting for Save.
@@ -357,7 +357,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
             </Row>
             <Row
               title="Removing a task"
-              hint={draft.preferences.deleteMode === "archive" ? "Archived: you can restore it from Settings → Tasks." : "Deleted for good, with its subtasks."}
+              hint={draft.preferences.deleteMode === "archive" ? "Archived: you can restore it from Settings → General." : "Deleted for good, with its subtasks."}
             >
               <select
                 value={draft.preferences.deleteMode}

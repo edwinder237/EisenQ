@@ -146,7 +146,7 @@ export function buildMcpServer(c: McpCallContext): McpServer {
         `Today is ${today} in the person's time zone (${tz}). Dates you send are read in that zone; a plain date means 9:00 AM.`,
         "Each quadrant's first open task is its 'next action'. Look a task up with list_tasks before changing it, and use its id.",
         off.length
-          ? `The person has switched off: ${off.join(", ")}. If they ask for one of these, tell them to turn it on in EisenQ → Settings → AI connectors.`
+          ? `The person has switched off: ${off.join(", ")}. If they ask for one of these, tell them to turn it on in EisenQ → Settings → Integrations → AI connectors.`
           : "",
       ]
         .filter(Boolean)
@@ -159,7 +159,7 @@ export function buildMcpServer(c: McpCallContext): McpServer {
     return guard(async () => {
       if (!(await takeWriteSlot(c.userId, prefs))) {
         return fail(
-          `EisenQ's daily limit of ${prefs.dailyWriteLimit} changes from AI apps is reached. It resets at midnight, or the person can raise it in Settings → AI connectors.`,
+          `EisenQ's daily limit of ${prefs.dailyWriteLimit} changes from AI apps is reached. It resets at midnight, or the person can raise it in Settings → Integrations → AI connectors.`,
         );
       }
       const { result, summary, taskId } = await fn();

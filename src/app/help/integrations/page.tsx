@@ -101,7 +101,7 @@ export default function IntegrationsHelpPage() {
         </nav>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="ai-connectors" title="AI connectors (Claude, ChatGPT)" where="Settings → AI connectors">
+        <Section id="ai-connectors" title="AI connectors (Claude, ChatGPT)" where="Settings → Integrations → AI connectors">
           <p>
             Add EisenQ to Claude or ChatGPT as a connector and manage your matrix by talking to it. The AI app signs in to your EisenQ
             account, and can only do what you allow on the AI connectors tab.
@@ -109,7 +109,7 @@ export default function IntegrationsHelpPage() {
 
           <H3>Before you start</H3>
           <Steps>
-            <li>Open <strong>Settings → AI connectors</strong> and turn on <strong>Allow AI connectors</strong>.</li>
+            <li>Open <strong>Settings → Integrations → AI connectors</strong> and turn on <strong>Allow AI connectors</strong>.</li>
             <li>Check the permissions and preferences, then choose <strong>Save changes</strong>. Saving also records this device&apos;s time zone (see below).</li>
           </Steps>
 
@@ -161,7 +161,7 @@ export default function IntegrationsHelpPage() {
           <H3>Preferences</H3>
           <Bullets>
             <li><strong>New tasks go to</strong>: the quadrant used when the AI doesn&apos;t name one (default Schedule). Do First tasks are always high priority, as in the app.</li>
-            <li><strong>Removing a task</strong>: <em>Archives it</em> (default; restore it from Settings → Tasks) or <em>Deletes it</em> for good, with its subtasks. With delete, Claude and ChatGPT are told the action is destructive, so they usually ask you first.</li>
+            <li><strong>Removing a task</strong>: <em>Archives it</em> (default; restore it from Settings → General) or <em>Deletes it</em> for good, with its subtasks. With delete, Claude and ChatGPT are told the action is destructive, so they usually ask you first.</li>
             <li><strong>Label tasks added by AI</strong>: shows “via Claude” (or the app&apos;s name) at the top of the task editor.</li>
             <li><strong>Share completed tasks</strong>: off means the AI only ever sees what is still open.</li>
             <li><strong>Daily limit</strong>: the most changes AI apps can make in a day (default 50). Adds, edits, completions, removals and goal changes count; reading doesn&apos;t. It resets at midnight in your time zone.</li>
@@ -198,14 +198,14 @@ export default function IntegrationsHelpPage() {
         </Section>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="assistant" title="Built-in AI assistant" where="Settings → Greeting → Claude API key">
+        <Section id="assistant" title="Built-in AI assistant" where="Settings → Integrations → Claude assistant">
           <p>
             The assistant panel looks at your open tasks and goals and suggests what to move, reschedule, link or drop. Nothing changes until you choose <strong>Apply</strong> on a suggestion.
           </p>
           <H3>Set up</H3>
           <Steps>
             <li>Create an API key at <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "var(--accent)" }}>console.anthropic.com</a>.</li>
-            <li>Paste it into <strong>Settings → Greeting → Claude API key</strong> and save.</li>
+            <li>Paste it into <strong>Settings → Integrations → Claude assistant</strong> and save.</li>
             <li>Open the assistant from the dashboard and ask, for example, “what should I drop this week?”</li>
           </Steps>
           <H3>What it sees and costs</H3>
@@ -219,7 +219,7 @@ export default function IntegrationsHelpPage() {
             They don&apos;t talk to each other; they follow the same rules, and both show up in one activity log.
           </p>
           <H3>Turn it off</H3>
-          <p>Remove the key in Settings → Greeting and save.</p>
+          <p>Remove the key in Settings → Integrations → Claude assistant and save.</p>
         </Section>
 
         {/* ---------------------------------------------------------------- */}
@@ -244,7 +244,7 @@ export default function IntegrationsHelpPage() {
         </Section>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="cashfold" title="CashFold payments" where="Settings → Integrations → CashFold API integration">
+        <Section id="cashfold" title="CashFold payments" where="Settings → Integrations → CashFold">
           <p>Shows what&apos;s due today and where the day ends, above the Priority Matrix.</p>
           <H3>Set up</H3>
           <Steps>
@@ -260,7 +260,7 @@ export default function IntegrationsHelpPage() {
         </Section>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="myndlist" title="Myndlist checklists" where="Settings → Integrations → Myndlist checklists">
+        <Section id="myndlist" title="Myndlist checklists" where="Settings → Integrations → Myndlist">
           <p>
             Reuse Myndlist checklists on tasks. Attaching one copies its steps onto the task, so ticking them never changes the original.
             A checklist can be set to <strong>block the task</strong> until every required step is ticked.
@@ -276,12 +276,12 @@ export default function IntegrationsHelpPage() {
         </Section>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="calendar" title="Calendar feeds" where="Settings → Calendar">
+        <Section id="calendar" title="Calendar feeds" where="Settings → Integrations → Calendar feeds">
           <p>Today&apos;s events from your calendars appear next to your routine.</p>
           <H3>Set up</H3>
           <Steps>
             <li>Copy your calendar&apos;s iCal (<Code>.ics</Code>) address. For Google Calendar, use the <strong>Secret address in iCal format</strong>, not the public URL.</li>
-            <li>Paste it into <strong>Settings → Calendar</strong>, add it, and save. Up to 10 feeds.</li>
+            <li>Paste it into <strong>Settings → Integrations → Calendar feeds</strong>, add it, and save. Up to 10 feeds.</li>
           </Steps>
           <H3>Privacy</H3>
           <p>
@@ -292,14 +292,14 @@ export default function IntegrationsHelpPage() {
         </Section>
 
         {/* ---------------------------------------------------------------- */}
-        <Section id="gemini" title="Gemini (weather & deadlines)" where="Settings → Greeting → Google Gemini API key">
+        <Section id="gemini" title="Gemini (weather & deadlines)" where="Settings → Integrations → Google Gemini">
           <p>
             Powers the what-to-wear line in your greeting (with the weather for your <strong>Weather location</strong>), and deadline suggestions in the capture extension.
           </p>
           <H3>Set up</H3>
           <Steps>
             <li>Get a free key at <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: "var(--accent)" }}>aistudio.google.com</a>.</li>
-            <li>Paste it into <strong>Settings → Greeting</strong> and save.</li>
+            <li>Paste it into <strong>Settings → Integrations → Google Gemini</strong> and save.</li>
           </Steps>
           <H3>Privacy</H3>
           <p>

@@ -37,7 +37,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const creds = await loadMyndlistCredentials(userId);
     if (!creds.apiUrl || !creds.apiKey) {
-      return NextResponse.json({ error: "Connect Myndlist in Settings → Integrations first." }, { status: 400 });
+      return NextResponse.json({ error: "Connect Myndlist in Settings → Integrations → Myndlist first." }, { status: 400 });
     }
 
     const copied = await copyChecklistFromMyndlist(userId, creds, parsed.data.sourceId, (task.checklists ?? []).length);
