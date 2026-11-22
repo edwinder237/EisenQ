@@ -2,7 +2,7 @@
 
 Today's events from up to 10 `.ics` feeds, shown beside the routine. Read-only.
 
-- **Settings:** Calendar tab. `icalUrlsEnc`: an encrypted JSON array. A secret iCal URL is a
+- **Settings:** Integrations → Calendar feeds. `icalUrlsEnc`: an encrypted JSON array. A secret iCal URL is a
   credential, hence the encryption. Also cached in `localStorage` (`eisenq-ical-urls`).
 - **Routes:** `POST /api/calendar/feeds` fetches all feeds and returns today's events grouped by
   calendar (start and end of day computed in the browser's time zone); `GET /api/calendar?url=`

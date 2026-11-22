@@ -3,7 +3,7 @@
 EisenQ is a remote [Model Context Protocol](https://modelcontextprotocol.io) server at
 `https://www.eisenq.app/api/mcp`. People add it as a custom connector in Claude or ChatGPT, sign
 in with their EisenQ (Clerk) account, and the AI app can then read and change their tasks and
-goals within what they allow in **Settings → AI connectors**.
+goals within what they allow in **Settings → Integrations → AI connectors**.
 
 User guide: `/help/integrations#ai-connectors`.
 

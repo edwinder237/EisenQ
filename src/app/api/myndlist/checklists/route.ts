@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
       const message =
         result.outcome === "http-error"
           ? result.message
-          : "Couldn't reach Myndlist. Check the connection in Settings → Integrations.";
+          : "Couldn't reach Myndlist. Check the connection in Settings → Integrations → Myndlist.";
       return NextResponse.json({ configured: true, error: message }, { status: 502 });
     }
 
@@ -114,7 +114,7 @@ export async function POST(request: NextRequest) {
 
     const creds = await loadMyndlistCredentials(userId);
     if (!creds.apiUrl || !creds.apiKey) {
-      return NextResponse.json({ error: "Connect Myndlist in Settings → Integrations first." }, { status: 400 });
+      return NextResponse.json({ error: "Connect Myndlist in Settings → Integrations → Myndlist first." }, { status: 400 });
     }
 
     const steps = (parsed.data.steps ?? [])

@@ -353,20 +353,30 @@ const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 180, 240, 480];
 const ROW_BODY = "flex flex-wrap items-center gap-x-[8px] gap-y-[5px] min-w-0 flex-1";
 const ROW_TITLE = "text-[13.5px] leading-[20px] min-w-0 break-words";
 
+// Two tabs: General (how the app behaves) and Integrations (everything it
+// connects to, in one list with a status each, so they're easy to manage).
 const SETTINGS_SECTIONS = [
-  { id: "tasks", label: "Tasks" },
-  { id: "greeting", label: "Greeting" },
-  { id: "calendar", label: "Calendar" },
+  { id: "general", label: "General" },
   { id: "integrations", label: "Integrations" },
-  { id: "ai", label: "AI connectors" },
 ] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
-// Where each Settings tab's "Help" link lands on /help/integrations.
-const SETTINGS_HELP_ANCHOR: Partial<Record<SettingsSection, string>> = {
-  greeting: "gemini",
-  calendar: "calendar",
-  integrations: "cashfold",
+type IntegrationView = "ai" | "assistant" | "gemini" | "calendar" | "cashfold" | "myndlist";
+// Where each integration's "Help" link lands on /help/integrations.
+const INTEGRATION_HELP_ANCHOR: Record<IntegrationView, string> = {
   ai: "ai-connectors",
+  assistant: "assistant",
+  gemini: "gemini",
+  calendar: "calendar",
+  cashfold: "cashfold",
+  myndlist: "myndlist",
+};
+const INTEGRATION_TITLES: Record<IntegrationView, string> = {
+  ai: "AI connectors",
+  assistant: "Claude assistant",
+  gemini: "Google Gemini",
+  calendar: "Calendar feeds",
+  cashfold: "CashFold",
+  myndlist: "Myndlist",
 };
 
 // "yyyy-MM-dd" → local Date (avoids the UTC shift of new Date("2026-07-28"))
@@ -521,7 +531,9 @@ export default function HomePage() {
   // AI connectors (MCP): applied config from the server, and the Settings draft.
   const [mcpConfig, setMcpConfig] = useState<McpConfigDraft>(DEFAULT_MCP_CONFIG);
   const [draftMcp, setDraftMcp] = useState<McpConfigDraft>(DEFAULT_MCP_CONFIG);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("tasks");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  // Which integration's page is open in Settings → Integrations; null shows the list.
+  const [integrationView, setIntegrationView] = useState<IntegrationView | null>(null);
   const [financeApiUrl, setFinanceApiUrl] = useState("");
   const [financeApiKey, setFinanceApiKey] = useState("");
   const [draftFinanceUrl, setDraftFinanceUrl] = useState("");
@@ -3610,13 +3622,13 @@ export default function HomePage() {
   // Promote a task to be the quadrant's headline. Pinned explicitly, since
   // scheduled tasks are ordered by date and can't be moved by sortOrder.
   // Open Settings with every draft reset to the saved values.
-  const openSettings = (section: SettingsSection) => {
+  const openSettings = (section: SettingsSection, view: IntegrationView | null = null) => {
     setSettingsKeyInput(geminiApiKey); setDraftAnthropicKey(anthropicApiKey); setLocationInput(weatherLocation);
     setDraftIcalUrls(icalUrls); setSettingsIcalInput(""); setSettingsIcalError(""); setDraftAutoArchive(autoArchiveCompleted);
     setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null);
     setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null);
     setDraftMcp(mcpConfig);
-    setSettingsSection(section); void fetchArchivedTasks(); setIsSettingsOpen(true);
+    setSettingsSection(section); setIntegrationView(view); void fetchArchivedTasks(); setIsSettingsOpen(true);
   };
 
   // Apply one assistant suggestion through the same paths the matrix uses.
@@ -4043,7 +4055,7 @@ export default function HomePage() {
               }} title="Toggle theme">
                 {isDarkMode ? <Sun className="w-[17px] h-[17px]" /> : <Moon className="w-[17px] h-[17px]" />}
               </button>
-              <button className="navbtn" onClick={() => openSettings("tasks")} title="Settings">
+              <button className="navbtn" onClick={() => openSettings("general")} title="Settings">
                 <Settings className="w-[17px] h-[17px]" />
               </button>
               <UserButton
@@ -4147,7 +4159,7 @@ export default function HomePage() {
         open={isAssistantOpen}
         onOpenChange={setIsAssistantOpen}
         onApply={handleApplySuggestion}
-        onOpenSettings={() => { setIsAssistantOpen(false); openSettings("greeting"); }}
+        onOpenSettings={() => { setIsAssistantOpen(false); openSettings("integrations", "assistant"); }}
       />
 
       <Dialog.Root open={isCalendarDrawerOpen} onOpenChange={setIsCalendarDrawerOpen}>
@@ -6162,7 +6174,7 @@ export default function HomePage() {
           <div style={{ padding: "20px 22px 0" }} className="flex flex-col gap-2">
             {!myndlistConfigured ? (
               <div className="rounded-[13px] text-[13px] leading-[1.55]" style={{ padding: "16px", background: "var(--form-bg)", border: "1px solid var(--form-bd)", color: "var(--muted)" }}>
-                Connect Myndlist in <button onClick={() => { closeChecklistLibrary(); setSettingsSection("integrations"); setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null); setIsSettingsOpen(true); }} className="font-semibold" style={{ color: "var(--accent)" }}>Settings → Integrations</button> to reuse its checklists here.
+                Connect Myndlist in <button onClick={() => { closeChecklistLibrary(); setSettingsSection("integrations"); setIntegrationView("myndlist"); setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null); setIsSettingsOpen(true); }} className="font-semibold" style={{ color: "var(--accent)" }}>Settings → Integrations</button> to reuse its checklists here.
               </div>
             ) : myndlistLoading && myndlistTemplates.length === 0 ? (
               <>
@@ -7165,8 +7177,8 @@ export default function HomePage() {
             <div className="shrink-0 flex items-center justify-between" style={{ padding: "18px 24px", borderBottom: "1px solid var(--line2)" }}>
               <Dialog.Title style={{ fontFamily: "var(--font-serif)", color: "var(--ink)" }} className="text-[22px]">Settings</Dialog.Title>
               <div className="flex items-center gap-3">
-              {SETTINGS_HELP_ANCHOR[settingsSection] && (
-                <a href={`/help/integrations#${SETTINGS_HELP_ANCHOR[settingsSection]}`} target="_blank" rel="noopener noreferrer"
+              {settingsSection === "integrations" && integrationView && (
+                <a href={`/help/integrations#${INTEGRATION_HELP_ANCHOR[integrationView]}`} target="_blank" rel="noopener noreferrer"
                   className="text-[12.5px] hover:underline" style={{ color: "var(--accent)" }}>
                   Help
                 </a>
@@ -7185,7 +7197,7 @@ export default function HomePage() {
                 {SETTINGS_SECTIONS.map((sec) => {
                   const active = settingsSection === sec.id;
                   return (
-                    <button key={sec.id} onClick={() => setSettingsSection(sec.id)}
+                    <button key={sec.id} onClick={() => { setSettingsSection(sec.id); setIntegrationView(null); }}
                       className="shrink-0 text-left text-[13px] rounded-[9px] transition-colors whitespace-nowrap"
                       style={{ padding: "8px 12px", fontWeight: active ? 600 : 400, color: active ? "var(--ink)" : "var(--muted5)", background: active ? "var(--chip)" : "transparent" }}>
                       {sec.label}
@@ -7195,7 +7207,57 @@ export default function HomePage() {
               </nav>
 
               <div className="flex-1 min-h-0 overflow-y-auto" style={{ padding: "20px 24px" }}>
-              {settingsSection === "tasks" && (
+              {settingsSection === "integrations" && !integrationView && (() => {
+                // Every connection in one list: what it does, and whether it's on.
+                const rows: { id: IntegrationView | "extension"; name: string; desc: string; status: string; on: boolean }[] = [
+                  { id: "ai", name: "AI connectors", desc: "Let Claude, ChatGPT and other AI apps work with your tasks.", status: mcpConfig.enabled ? "On" : "Off", on: mcpConfig.enabled },
+                  { id: "assistant", name: "Claude assistant", desc: "Prioritization suggestions inside EisenQ, on your Claude key.", status: anthropicApiKey ? "Connected" : "Not set up", on: !!anthropicApiKey },
+                  { id: "gemini", name: "Google Gemini", desc: "What-to-wear line and deadline suggestions for captures.", status: geminiApiKey ? "Connected" : "Not set up", on: !!geminiApiKey },
+                  { id: "calendar", name: "Calendar feeds", desc: "Today's events from Google, Apple or Outlook calendars.", status: icalUrls.length ? `${icalUrls.length} feed${icalUrls.length === 1 ? "" : "s"}` : "Not set up", on: icalUrls.length > 0 },
+                  { id: "cashfold", name: "CashFold", desc: "Payments due today, above the Priority Matrix.", status: financeApiUrl ? "Connected" : "Not set up", on: !!financeApiUrl },
+                  { id: "myndlist", name: "Myndlist", desc: "Reusable checklists to attach to tasks.", status: myndlistApiUrl ? "Connected" : "Not set up", on: !!myndlistApiUrl },
+                  { id: "extension", name: "Chrome extension", desc: "Turn any page, selection or Gmail thread into a task.", status: "Set up ↗", on: false },
+                ];
+                return (
+                  <div className="flex flex-col gap-2">
+                    {rows.map((r) => {
+                      const inner = (
+                        <>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[14px]" style={{ color: "var(--ink)" }}>{r.name}</div>
+                            <div className="text-[12px] mt-0.5" style={{ color: "var(--muted)" }}>{r.desc}</div>
+                          </div>
+                          <span className="shrink-0 inline-flex items-center gap-1.5 text-[12px]" style={{ color: r.on ? "var(--ink3)" : "var(--muted4)" }}>
+                            {r.on && <span className="w-[6px] h-[6px] rounded-full" style={{ background: "var(--accent)" }} />}
+                            {r.status}
+                          </span>
+                          {r.id !== "extension" && <ChevronRight className="w-[15px] h-[15px] shrink-0" style={{ color: "var(--muted3)" }} />}
+                        </>
+                      );
+                      const cls = "hovrow w-full flex items-center gap-3 rounded-[11px] text-left";
+                      const st = { padding: "12px 14px", background: "var(--field)", border: "1px solid var(--field-bd)" } as const;
+                      return r.id === "extension" ? (
+                        <a key={r.id} href="/connect-extension" target="_blank" rel="noopener noreferrer" className={cls} style={st}>{inner}</a>
+                      ) : (
+                        <button key={r.id} onClick={() => setIntegrationView(r.id as IntegrationView)} className={cls} style={st}>{inner}</button>
+                      );
+                    })}
+                    <p className="text-[11.5px] mt-1" style={{ color: "var(--muted)" }}>Keys and addresses you enter are encrypted before they&apos;re stored.</p>
+                  </div>
+                );
+              })()}
+
+              {settingsSection === "integrations" && integrationView && (
+                <div className="flex items-center gap-2 mb-4">
+                  <button onClick={() => setIntegrationView(null)} className="inline-flex items-center gap-1 text-[12.5px]" style={{ color: "var(--accent)" }}>
+                    <ChevronLeft className="w-[14px] h-[14px]" /> Integrations
+                  </button>
+                  <span className="text-[12.5px]" style={{ color: "var(--muted4)" }}>/</span>
+                  <span className="text-[12.5px] font-semibold" style={{ color: "var(--ink2)" }}>{INTEGRATION_TITLES[integrationView]}</span>
+                </div>
+              )}
+
+              {settingsSection === "general" && (
               <div>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Completed tasks</label>
                 <p className="text-[12px] mb-2.5" style={{ color: "var(--muted)" }}>
@@ -7242,10 +7304,11 @@ export default function HomePage() {
               </div>
               )}
 
-              {settingsSection === "greeting" && (
+              {(settingsSection === "general" || (settingsSection === "integrations" && (integrationView === "gemini" || integrationView === "assistant"))) && (
               <div>
               {/* Weather location */}
-              <div className="pb-5">
+              {settingsSection === "general" && (
+              <div className="pt-6 mt-6" style={{ borderTop: "1px solid var(--line2)" }}>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Weather location</label>
                 <p className="text-[12px] mb-2" style={{ color: "var(--muted)" }}>Drives the weather and what-to-wear line in your greeting.</p>
                 <input
@@ -7258,7 +7321,10 @@ export default function HomePage() {
                 />
               </div>
 
+              )}
+
               {/* Gemini API Key */}
+              {integrationView === "gemini" && settingsSection === "integrations" && (
               <div>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Google Gemini API key</label>
                 <p className="text-[12px] mb-2" style={{ color: "var(--muted)" }}>
@@ -7284,8 +7350,11 @@ export default function HomePage() {
                 )}
               </div>
 
+              )}
+
               {/* Anthropic (Claude) API Key */}
-              <div className="pt-5">
+              {integrationView === "assistant" && settingsSection === "integrations" && (
+              <div>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Claude API key</label>
                 <p className="text-[12px] mb-2" style={{ color: "var(--muted)" }}>
                   Used by the AI assistant to suggest how to prioritize your tasks (experimental). Create a key at{" "}
@@ -7310,11 +7379,12 @@ export default function HomePage() {
                   </button>
                 )}
               </div>
+              )}
 
               </div>
               )}
 
-              {settingsSection === "calendar" && (
+              {settingsSection === "integrations" && integrationView === "calendar" && (
               <div>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Calendar feeds (iCal)</label>
                 <p className="text-[12px] mb-3" style={{ color: "var(--muted)" }}>
@@ -7361,8 +7431,9 @@ export default function HomePage() {
               </div>
               )}
 
-              {settingsSection === "integrations" && (
+              {settingsSection === "integrations" && (integrationView === "cashfold" || integrationView === "myndlist") && (
               <div>
+                {integrationView === "cashfold" && (<>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>CashFold API integration</label>
                 <p className="text-[12px] mb-3" style={{ color: "var(--muted)" }}>
                   Connect your CashFold account to show what&apos;s due today and where the day ends, above the Priority Matrix. Your endpoint and key are encrypted and used only for your own dashboard.
@@ -7444,7 +7515,9 @@ export default function HomePage() {
                   Test connection uses what&apos;s in the fields above, so you can check a key before saving it.
                 </p>
 
-                <div className="mt-6 pt-6" style={{ borderTop: "1px solid var(--line2)" }}>
+                </>)}
+                {integrationView === "myndlist" && (
+                <div>
                   <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Myndlist checklists</label>
                   <p className="text-[12px] mb-3" style={{ color: "var(--muted)" }}>
                     Connect Myndlist to reuse its checklists here. Attaching one to a task copies its steps in fresh, so ticking them never changes the original.
@@ -7512,10 +7585,11 @@ export default function HomePage() {
                     </p>
                   )}
                 </div>
+                )}
               </div>
               )}
 
-              {settingsSection === "ai" && (
+              {settingsSection === "integrations" && integrationView === "ai" && (
                 <AiConnectorsPanel draft={draftMcp} onChange={setDraftMcp} savedEnabled={mcpConfig.enabled} />
               )}
               </div>

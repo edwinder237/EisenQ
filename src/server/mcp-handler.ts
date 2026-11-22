@@ -75,13 +75,13 @@ async function clientNameFrom(req: Request, clientId: string): Promise<string | 
 export async function handleVerifiedMcpRequest(req: Request, authInfo: AuthInfo, userId: string): Promise<Response> {
   const { mcp: settings, autoArchiveCompleted } = await loadMcpSettings(userId);
   if (!settings.enabled) {
-    return refused("AI connectors are switched off in EisenQ. Turn them on in Settings → AI connectors.");
+    return refused("AI connectors are switched off in EisenQ. Turn them on in Settings → Integrations → AI connectors.");
   }
 
   const clientId = authInfo.clientId;
   const known = settings.clients.find((c) => c.clientId === clientId);
   if (known?.blocked) {
-    return refused("This app's access to EisenQ was revoked. Allow it again in EisenQ → Settings → AI connectors.");
+    return refused("This app's access to EisenQ was revoked. Allow it again in EisenQ → Settings → Integrations → AI connectors.");
   }
   const client = await touchClient(userId, settings, clientId, await clientNameFrom(req, clientId));
 

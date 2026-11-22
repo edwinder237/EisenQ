@@ -119,7 +119,7 @@ export async function hasAssistantKey(userId: string): Promise<boolean> {
 
 async function loadApiKey(userId: string): Promise<string> {
   const doc = await userSettingsCollection.findOne({ userId }, { projection: { anthropicApiKeyEnc: 1 } });
-  if (!doc?.anthropicApiKeyEnc) throw new AssistantError("no_key", "Add your Claude API key in Settings → Greeting.");
+  if (!doc?.anthropicApiKeyEnc) throw new AssistantError("no_key", "Add your Claude API key in Settings → Integrations → Claude assistant.");
   try {
     return decrypt(doc.anthropicApiKeyEnc);
   } catch {
@@ -187,7 +187,7 @@ export async function runAssistant(
     });
   } catch (error) {
     if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
-      throw new AssistantError("bad_key", "Claude rejected the saved API key. Check it in Settings → Greeting.");
+      throw new AssistantError("bad_key", "Claude rejected the saved API key. Check it in Settings → Integrations → Claude assistant.");
     }
     if (error instanceof Anthropic.RateLimitError) {
       throw new AssistantError("rate_limited", "Claude is rate limiting this key. Try again in a minute.");

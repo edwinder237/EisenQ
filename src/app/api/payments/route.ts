@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
         console.error("Payments: finance API call failed:", result.outcome);
       }
       return NextResponse.json(
-        { error: "Finance API request failed. Check Settings → Integrations → Test connection." },
+        { error: "Finance API request failed. Check Settings → Integrations → CashFold → Test connection." },
         { status: 502 }
       );
     }
