@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import toast from "react-hot-toast";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { friendlyAppName } from "~/lib/task-source";
+import { useConfirm } from "~/components/ConfirmDialog";
 
 // Settings → Integrations → AI connectors. The configuration (switch, permissions,
 // preferences) is a draft owned by the dashboard and saved with the rest of
@@ -199,6 +200,7 @@ interface Props {
 }
 
 export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
+  const confirm = useConfirm();
   const [apps, setApps] = useState<ConnectedApp[] | null>(null);
   const [activity, setActivity] = useState<ActivityLine[]>([]);
   const [copied, setCopied] = useState(false);
@@ -237,7 +239,7 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
   };
 
   const changeAccess = async (app: ConnectedApp, action: "revoke" | "allow") => {
-    if (action === "revoke" && !confirm(`Revoke ${friendlyAppName(app.name) ?? app.name}'s access to EisenQ? Its next request will be refused.`)) return;
+    if (action === "revoke" && !(await confirm({ title: `Revoke ${friendlyAppName(app.name) ?? app.name}'s access?`, message: "Its next request to EisenQ will be refused. You can allow it again later.", confirmLabel: "Revoke", destructive: true }))) return;
     setBusyClient(app.clientId);
     try {
       const res = await fetch("/api/mcp/clients", {

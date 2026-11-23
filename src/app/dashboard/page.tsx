@@ -7,6 +7,7 @@ import { AssistantPanel, type AssistantSuggestion } from "~/components/Assistant
 import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
+import { useConfirm } from "~/components/ConfirmDialog";
 import { PlanningGrid } from "~/components/PlanningGrid";
 import type { AssistantRunView } from "~/lib/delegate-prototype";
 import { carriesOver, intervalLabel, missedDates, missedLabel, relativeDayLabel, weeklyLabel } from "~/lib/routine";
@@ -445,6 +446,7 @@ function SortableTaskRow({ id, disabled, children }: {
 }
 
 export default function HomePage() {
+  const confirm = useConfirm();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -5835,7 +5837,7 @@ export default function HomePage() {
                     className="cta text-[13px] font-semibold rounded-[10px] disabled:opacity-50" style={{ padding: "9px 20px", color: "var(--btn-fg)", background: "var(--btn-primary)" }}>{editing ? "Save" : "Add"}</button>
                   <button onClick={resetMaintenanceForm} className="text-[13px]" style={{ padding: "9px 12px", color: "var(--ink3)" }}>Cancel</button>
                   {editing && (
-                    <button onClick={() => { if (confirm(`Delete "${editing.title}"?`)) { void handleDeleteMaintenanceItem(editing._id); resetMaintenanceForm(); } }}
+                    <button onClick={() => void (async () => { if (await confirm({ title: "Delete this item?", message: `"${editing.title}" will be deleted.`, confirmLabel: "Delete", destructive: true })) { void handleDeleteMaintenanceItem(editing._id); resetMaintenanceForm(); } })()}
                       className="ml-auto text-[12.5px]" style={{ color: "var(--tag-fg)" }}>Delete</button>
                   )}
                 </div>
@@ -7051,7 +7053,15 @@ export default function HomePage() {
             <div className="flex items-center justify-between gap-3 shrink-0" style={{ padding: "13px 22px", borderTop: "1px solid var(--line2)", background: "var(--form-bg)" }}>
               {editingTask ? (
                 <div className="flex items-center gap-4">
-                  <button onClick={() => void handleDeleteTask(editingTask)} className="text-[13px] font-medium px-1" style={{ color: "var(--tag-fg)" }}>
+                  <button onClick={() => void (async () => {
+                      const subs = tasks.filter(t => t.parentTaskId === editingTask._id).length;
+                      if (await confirm({
+                        title: "Delete this task?",
+                        message: subs > 0 ? `"${editingTask.title}" and its ${subs} subtask${subs === 1 ? "" : "s"} will be deleted.` : `"${editingTask.title}" will be deleted.`,
+                        confirmLabel: "Delete",
+                        destructive: true,
+                      })) void handleDeleteTask(editingTask);
+                    })()} className="text-[13px] font-medium px-1" style={{ color: "var(--tag-fg)" }}>
                     Delete
                   </button>
                   <button onClick={() => void handleCompleteFromEditor()}
@@ -7306,7 +7316,7 @@ export default function HomePage() {
                   </span>
                   {archivedTasks.length > 0 && (
                     <button
-                      onClick={() => { if (confirm(`Permanently delete ${archivedTasks.length} archived task${archivedTasks.length === 1 ? "" : "s"}? This cannot be undone.`)) void handleDeleteArchivedTasks(); }}
+                      onClick={() => void (async () => { if (await confirm({ title: `Delete ${archivedTasks.length} archived task${archivedTasks.length === 1 ? "" : "s"}?`, message: "This can't be undone.", confirmLabel: "Delete all", destructive: true })) void handleDeleteArchivedTasks(); })()}
                       className="text-[12.5px] font-semibold" style={{ color: "var(--tag-fg)" }}>
                       Delete all
                     </button>

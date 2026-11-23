@@ -4,6 +4,7 @@ import { type Metadata, type Viewport } from "next";
 import { Inter, Newsreader } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Analytics } from "@vercel/analytics/react";
+import { ConfirmProvider } from "~/components/ConfirmDialog";
 
 export const metadata: Metadata = {
   // Needed for absolute og:image URLs — link unfurlers cannot resolve a
@@ -71,7 +72,7 @@ export default function RootLayout({
     <ClerkProvider afterSignOutUrl="/sign-in">
       <html lang="en" className={`${inter.variable} ${newsreader.variable}`}>
         <body className="bg-gray-950 text-white font-sans">
-          {children}
+          <ConfirmProvider>{children}</ConfirmProvider>
           <Analytics />
         </body>
       </html>
