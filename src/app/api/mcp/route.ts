@@ -22,6 +22,27 @@ const ACCEPTED_AUDIENCES = [
   `${MCP_RESOURCE_URL.replace("://www.", "://")}/`,
 ];
 
+/**
+ * What kind of token was sent, for the rejection log. Never the token itself:
+ * only Clerk's public prefix, or a JWT's typ header and the non-secret claims
+ * that say what it is for.
+ */
+function tokenShape(token: string): string {
+  if (token.startsWith("oat_")) return "Clerk OAuth access token (oat_)";
+  const parts = token.split(".");
+  if (parts.length === 3) {
+    try {
+      const header = JSON.parse(Buffer.from(parts[0]!, "base64url").toString()) as { typ?: string };
+      const payload = JSON.parse(Buffer.from(parts[1]!, "base64url").toString()) as { aud?: unknown; nonce?: unknown; sid?: unknown };
+      const kind = payload.nonce !== undefined || typeof payload.aud === "string" && !payload.aud.startsWith("http") ? "looks like an ID token" : payload.sid !== undefined ? "looks like a session token" : "JWT";
+      return `JWT typ=${header.typ ?? "none"}, ${kind}`;
+    } catch {
+      return "three-part token that isn't a JWT";
+    }
+  }
+  return `opaque, starts "${token.slice(0, 4)}", length ${token.length}`;
+}
+
 /** True when Clerk recognises the token and it carries no audience. False on any error. */
 async function hasNoAudience(clerk: Awaited<ReturnType<typeof clerkClient>>, token: string): Promise<boolean> {
   try {
@@ -49,7 +70,7 @@ async function handler(req: Request): Promise<Response> {
   const authInfo = verifyClerkToken(state.toAuth(), token);
   const userId = authInfo?.extra?.userId;
   if (!authInfo || typeof userId !== "string") {
-    console.warn("[mcp] token rejected:", state.reason ?? "unknown", state.message ?? "");
+    console.warn("[mcp] token rejected:", state.reason ?? "unknown", state.message ?? "", `(token shape: ${tokenShape(token)})`);
     return unauthorized();
   }
 
