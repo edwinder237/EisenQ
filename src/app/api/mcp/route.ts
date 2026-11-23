@@ -49,7 +49,12 @@ async function hasNoAudience(clerk: Awaited<ReturnType<typeof clerkClient>>, tok
     const verified = await clerk.idPOAuthAccessToken.verify(token);
     const aud = (verified as { aud?: unknown }).aud;
     return aud === undefined || aud === null || aud === "" || (Array.isArray(aud) && aud.length === 0);
-  } catch {
+  } catch (err) {
+    // Clerk's authenticateRequest collapses API failures into "Unexpected
+    // error"; this is the only place its real reason (code, message) shows.
+    const e = err as { status?: number; errors?: { code?: string; message?: string; longMessage?: string }[]; message?: string };
+    const detail = e.errors?.map((x) => `${x.code ?? "?"}: ${x.longMessage ?? x.message ?? ""}`).join("; ") ?? e.message;
+    console.warn(`[mcp] Clerk verify failed (status=${e.status ?? "?"}): ${detail}`);
     return false;
   }
 }
