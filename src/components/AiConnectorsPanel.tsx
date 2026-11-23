@@ -317,6 +317,15 @@ export function AiConnectorsPanel({ draft, onChange, savedEnabled }: Props) {
                 <>In a chat, add EisenQ from the <strong>+</strong> menu and ask away.</>,
               ]}
             />
+            <Guide
+              title="Add to Muse or another AI app"
+              steps={[
+                <>In the app, look for <strong>Add MCP server</strong>, <strong>custom connector</strong> or <strong>remote MCP</strong>.</>,
+                <>Paste the address above. If it asks for a type, choose <strong>Streamable HTTP</strong>. If it asks how to sign in, choose <strong>OAuth</strong>.</>,
+                <>Leave <strong>client ID</strong> and <strong>secret</strong> empty. The app registers itself when you connect.</>,
+                <>Sign in to EisenQ and approve. If it fails, check that <strong>Allow AI connectors</strong> above is on and saved.</>,
+              ]}
+            />
           </div>
         </Section>
 
