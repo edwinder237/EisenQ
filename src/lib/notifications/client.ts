@@ -79,6 +79,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `Notifications request failed (${res.status})`);
   }
+  // The actions answer 204 No Content, which has no JSON to read.
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 

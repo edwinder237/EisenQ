@@ -13,6 +13,7 @@ Developer documentation for everything EisenQ connects to. The user guide is the
 | [Myndlist](myndlist.md) | Reusable checklists copied onto tasks | `myndlistApiUrlEnc`, `myndlistApiKeyEnc`, `checklistGates` | `/api/myndlist/checklists[/id]`, `/api/myndlist/test`, `/api/tasks/[taskId]/checklists[...]` | Clerk session | user's Myndlist API via `safeFetch` |
 | [Calendar feeds](calendar.md) | Today's events beside the routine | `icalUrlsEnc` | `/api/calendar`, `/api/calendar/feeds` | Clerk session | iCal URLs via `safeFetch` |
 | [Gemini](gemini.md) | What-to-wear line; capture deadlines | `geminiApiKeyEnc` | `/api/weather` (POST), `/api/capture/deadline` | Clerk session / capture token | Gemini API |
+| [Notifications email](../notifications/README.md) | The daily notifications email, through Socle | `notifications`, `notificationDigest` (plain) | `/api/notifications/*`, `/api/cron/notifications-digest` | Clerk session; `CRON_SECRET` (cron) | Socle (`SOCLE_API_URL`, `SOCLE_API_KEY`), server-side |
 
 The capture extension has its own design document: [`../chrome-extension-capture-design.md`](../chrome-extension-capture-design.md).
 

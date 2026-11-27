@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { notificationActionSchema } from "~/lib/notifications/schema";
-import { badRequest, notImplemented } from "~/server/notifications-stub";
+import { badRequest } from "~/server/notifications-stub";
+import { NotificationError, applyAction } from "~/server/notification-service";
 
 export const dynamic = "force-dynamic";
 
@@ -9,21 +10,17 @@ export const dynamic = "force-dynamic";
  * PATCH /api/notifications/:id  NotificationAction → 204
  *
  * :id is the stable id from deriveNotifications(), e.g. "task_overdue:<taskId>".
- * Store state per (userId, id); the item itself is re-derived, never stored.
+ * State is stored per (userId, id); the item itself is re-derived, never stored.
  *
- * TODO(backend):
  *  - read:    readAt = now.
- *  - dismiss: group "fyi" → hidden forever.
- *             group "needs" → hidden until tomorrow 09:00 local ("Not now").
- *             It comes back then if still true (task still overdue, etc.).
- *  - snooze:  hidden until later_today 18:00 (or now+3h if past) / tomorrow
- *             09:00 / next Monday 09:00, local. Use snoozeUntil() in derive.ts.
- *  - mute:    "Stop reminding me" → hidden forever for this id. Ids embed the
- *             occurrence (e.g. the maintenance due date), so the next cycle
- *             still notifies.
- *  - restore: Undo. Put back the hidden-until value from before the last
- *             change to this id (keep one previous value per id).
- *  - Anything hidden must also be left out of the next daily digest email.
+ *  - dismiss: "fyi" → hidden for good. "needs" → hidden until tomorrow 09:00
+ *             local ("Not now"); back then if still true.
+ *  - snooze:  later_today 18:00 (or now + 3 h if past) / tomorrow 09:00 /
+ *             next Monday 09:00, local, with snoozeUntil(). "needs" only.
+ *  - mute:    "Stop reminding me" → hidden for good for this id.
+ *  - restore: Undo: the hidden-until from before the last change.
+ *
+ * Anything hidden is also left out of the next daily email.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { userId } = await auth();
@@ -31,5 +28,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const { id } = await params;
   const parsed = notificationActionSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return badRequest(parsed.error.issues);
-  return notImplemented(`"${parsed.data.action}" on ${id}. See the comment on PATCH in this file.`);
+  try {
+    await applyAction(userId, id, parsed.data);
+    return new NextResponse(null, { status: 204 });
+  } catch (err) {
+    if (err instanceof NotificationError) return NextResponse.json({ error: err.message }, { status: err.status });
+    return NextResponse.json({ error: "Couldn't update that notification" }, { status: 500 });
+  }
 }
