@@ -1,4 +1,5 @@
 import type { ObjectId } from "mongodb";
+import type { ReminderSettings } from "~/lib/reminders";
 
 export type TaskQuadrant = "urgent-important" | "important-not-urgent" | "urgent-not-important" | "not-urgent-not-important";
 export type TaskPriority = "high" | "medium" | "low";
@@ -186,6 +187,24 @@ export interface UserSettings {
   // AI connectors (MCP). Absent until the user first saves the AI connectors
   // tab; readers fill in defaults with normalizeMcpSettings().
   mcp?: McpSettings;
+  // Waiting-task reminders (Settings → General → Reminders). Absent until
+  // first saved; readers fill in defaults with normalizeReminderSettings().
+  // Plain, not secret. Only people on NOTIFICATIONS_ALLOWED_USER_IDS see it.
+  notifications?: { staleTasks?: Partial<ReminderSettings> };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// What the daily reminder job sent, one row per waiting task, so a second run
+// on the same day sends nothing. Kept apart from `tasks` so the job never
+// writes to a task. A row is deleted as soon as its task stops waiting.
+export interface StaleTaskReminder {
+  _id?: ObjectId;
+  userId: string;
+  taskId: ObjectId;
+  since: Date;               // the task's quadrantSince (or createdAt) this row is about
+  lastSentOn: string;        // "YYYY-MM-DD" in America/Toronto
+  sentCount: number;         // reminders sent since the task entered Do First
   createdAt: Date;
   updatedAt: Date;
 }
@@ -248,4 +267,5 @@ export const collections = {
   checklistItems: "checklistItems",
   maintenanceItems: "maintenanceItems",
   userSettings: "userSettings",
+  staleTaskReminders: "staleTaskReminders",
 } as const;

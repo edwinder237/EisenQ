@@ -25,6 +25,10 @@ const isPublicRoute = createRouteMatcher([
   // bearer token, not the Clerk cookie, and the handler verifies it (audience
   // included) itself. Exact path — /api/mcp/clients must stay Clerk-protected.
   "/api/mcp",
+  // The daily waiting-task job. Vercel's cron call carries a Bearer
+  // CRON_SECRET, not the Clerk cookie, and the handler checks it before
+  // anything else. Exact path.
+  "/api/cron/stale-tasks",
   // RFC 9728 metadata telling those apps where to sign in. Public by design.
   "/.well-known/oauth-protected-resource(.*)",
   // Clerk's authorization-server metadata, mirrored for older MCP clients.

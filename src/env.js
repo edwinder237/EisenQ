@@ -14,6 +14,13 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
+    // Waiting-task reminders through Socle (docs/integrations/socle.md). All
+    // four are optional: Production sets them, Preview and local builds don't,
+    // and without them the daily job and the bell switch themselves off.
+    SOCLE_API_URL: z.string().url().optional(),
+    SOCLE_API_KEY: z.string().optional(),
+    CRON_SECRET: z.string().optional(),
+    NOTIFICATIONS_ALLOWED_USER_IDS: z.string().optional(),
   },
 
   /**
@@ -33,6 +40,10 @@ export const env = createEnv({
     DATABASE_URL: process.env.DATABASE_URL,
     SETTINGS_ENCRYPTION_KEY: process.env.SETTINGS_ENCRYPTION_KEY,
     NODE_ENV: process.env.NODE_ENV,
+    SOCLE_API_URL: process.env.SOCLE_API_URL,
+    SOCLE_API_KEY: process.env.SOCLE_API_KEY,
+    CRON_SECRET: process.env.CRON_SECRET,
+    NOTIFICATIONS_ALLOWED_USER_IDS: process.env.NOTIFICATIONS_ALLOWED_USER_IDS,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
   /**

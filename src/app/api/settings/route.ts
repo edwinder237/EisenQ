@@ -4,6 +4,8 @@ import { z } from "zod";
 import { userSettingsCollection } from "~/server/db";
 import { encrypt, decrypt } from "~/server/crypto";
 import { mcpSettingsUpdateSchema, mcpUpdateToSet, normalizeMcpSettings } from "~/server/mcp-settings";
+import { notificationsAccess, reminderSettingsUpdateSchema, reminderUpdateToSet } from "~/server/notifications";
+import { normalizeReminderSettings } from "~/lib/reminders";
 
 const updateSettingsSchema = z.object({
   geminiApiKey: z.string().max(200).optional(),
@@ -16,7 +18,16 @@ const updateSettingsSchema = z.object({
   myndlistApiKey: z.string().max(200).optional(),
   anthropicApiKey: z.string().max(300).optional(),
   mcp: mcpSettingsUpdateSchema.optional(),
+  reminders: reminderSettingsUpdateSchema.optional(),
 });
+
+function notificationsFields(userId: string, saved: Parameters<typeof normalizeReminderSettings>[0]) {
+  const access = notificationsAccess(userId);
+  return {
+    ...(access.reminders ? { reminders: normalizeReminderSettings(saved) } : {}),
+    ...(access.bell ? { bell: true } : {}),
+  };
+}
 
 export async function GET() {
   try {
@@ -66,6 +77,9 @@ export async function GET() {
         geminiApiKey, icalUrls, autoArchiveCompleted: doc?.autoArchiveCompleted ?? false, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey,
         // The daily counter is internal; everything else feeds the AI connectors tab.
         mcp: (({ writes: _writes, ...rest }) => rest)(normalizeMcpSettings(doc?.mcp)),
+        // Waiting-task reminders and the bell: only for people on
+        // NOTIFICATIONS_ALLOWED_USER_IDS. Everyone else gets neither field.
+        ...notificationsFields(userId, doc?.notifications?.staleTasks),
       },
       { headers: { "Cache-Control": "no-store" } }
     );
@@ -90,7 +104,11 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey, mcp } = parsed.data;
+    const { geminiApiKey, icalUrls, autoArchiveCompleted, financeApiUrl, financeApiKey, financeUserId, myndlistApiUrl, myndlistApiKey, anthropicApiKey, mcp, reminders } = parsed.data;
+
+    if (reminders && !notificationsAccess(userId).reminders) {
+      return NextResponse.json({ error: "Reminders aren't available for this account" }, { status: 403 });
+    }
 
     const set: Record<string, unknown> = { updatedAt: new Date() };
     const unset: Record<string, ""> = {};
@@ -133,6 +151,7 @@ export async function PUT(request: NextRequest) {
 
     // Dot paths, so saving the tab never touches connected apps or the log.
     if (mcp) Object.assign(set, mcpUpdateToSet(mcp));
+    if (reminders) Object.assign(set, reminderUpdateToSet(reminders));
 
     const update: Record<string, unknown> = {
       $set: set,
