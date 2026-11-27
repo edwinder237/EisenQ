@@ -1,15 +1,13 @@
 // The one door the UI uses for notifications. Two implementations:
 //
-//  - "live": calls /api/notifications/* (stubs today, see the route files).
+//  - "live" (default): calls /api/notifications/*, served by
+//            ~/server/notification-service.ts.
 //  - "mock": derives notifications in the browser from the tasks and
-//            maintenance already loaded, and keeps read / snoozed / dismissed
-//            state and preferences in localStorage. Good enough to use and
-//            demo the whole UI before the backend exists.
+//            maintenance already loaded, keeping state in localStorage. For
+//            development and demos without a database.
 //
 // Mode: NEXT_PUBLIC_NOTIFICATIONS_MODE ("off" | "mock" | "live", default
-// "off"). Overridable per browser with ?notifications=mock|live|off on any
-// page, remembered in localStorage, so it can be tried in production without
-// turning it on for anyone else.
+// "live"). ?notifications=mock|live|off overrides it for one page load.
 
 import { deriveNotifications, notNowUntil, snoozeUntil, type DeriveInput } from "./derive";
 import {
@@ -47,25 +45,24 @@ export interface NotificationsApi {
   sendTestEmail(): Promise<{ sentTo: string }>;
 }
 
-const MODE_KEY = "eisenq-notifications-mode";
+// Earlier builds remembered the mode here; a browser that once tried "mock"
+// would otherwise stay on fake local data now that the backend is live.
+const LEGACY_MODE_KEY = "eisenq-notifications-mode";
 
 export function getNotificationsMode(): NotificationsMode {
   const valid = (v: unknown): v is NotificationsMode => v === "off" || v === "mock" || v === "live";
   if (typeof window !== "undefined") {
     try {
-      const q = new URLSearchParams(window.location.search).get("notifications");
-      if (valid(q)) {
-        localStorage.setItem(MODE_KEY, q);
-        return q;
-      }
-      const saved = localStorage.getItem(MODE_KEY);
-      if (valid(saved)) return saved;
+      localStorage.removeItem(LEGACY_MODE_KEY);
     } catch {
-      /* storage blocked: fall through to the build default */
+      /* storage blocked: nothing to clear */
     }
+    // For development and demos only, and only for this page load.
+    const q = new URLSearchParams(window.location.search).get("notifications");
+    if (valid(q)) return q;
   }
   const env = process.env.NEXT_PUBLIC_NOTIFICATIONS_MODE;
-  return valid(env) ? env : "off";
+  return valid(env) ? env : "live";
 }
 
 // ---------------------------------------------------------------- live ----

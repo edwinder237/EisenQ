@@ -1,8 +1,9 @@
-# Notifications: backend handoff
+# Notifications
 
-The front end for in-app and email notifications is built and runs today on a
-**mock** that keeps everything in the browser. This document is what the
-backend needs to build so it can run **live**.
+In-app and daily-email notifications. The front end and the backend are both
+built, and the app runs **live** by default. This document began as the
+backend handoff; the contract and rules below are what both sides follow, and
+"Backend" at the end describes what was built.
 
 ## What the person sees
 
@@ -27,14 +28,16 @@ backend needs to build so it can run **live**.
 
 ## Switching it on
 
+**Live by default** since the backend shipped (PR #76).
+
 | Mode | What it does |
 |---|---|
-| `off` (default) | No bell, no Settings tab, no Remind me. Production looks unchanged. |
-| `mock` | Everything works, from data already on the dashboard; state is kept in `localStorage`. |
-| `live` | Calls `/api/notifications/*`. Use once the routes below are implemented. |
+| `live` (default) | Calls `/api/notifications/*`, served by `src/server/notification-service.ts`. |
+| `off` | No bell, no Settings tab, no Remind me. |
+| `mock` | Everything runs in the browser on the dashboard's data, with state in `localStorage`. For development and demos without a database. |
 
-- **Build-wide:** `NEXT_PUBLIC_NOTIFICATIONS_MODE=mock|live|off`.
-- **One browser:** open any page with `?notifications=mock` (or `live` / `off`). It's remembered in that browser.
+- **Build-wide:** `NEXT_PUBLIC_NOTIFICATIONS_MODE=live|off|mock`. Leave it unset for live.
+- **One page load:** add `?notifications=mock` (or `off` / `live`) to the URL. It isn't remembered. Earlier builds did remember it, so the app now clears that old saved choice.
 
 ## Files
 
@@ -44,7 +47,7 @@ backend needs to build so it can run **live**.
 | `src/lib/notifications/schema.ts` | zod schemas for the request bodies; the stub routes already validate with them. |
 | `src/lib/notifications/derive.ts` | **The rules**, as a pure function: which notifications exist right now. Use it server-side too. |
 | `src/lib/notifications/client.ts` | `NotificationsApi` with the `live` (HTTP) and `mock` (browser) implementations, plus mode switching. |
-| `src/app/api/notifications/**` | Route stubs. Each answers **501** with a `TODO(backend)` comment saying exactly what to do. |
+| `src/app/api/notifications/**` | The routes, backed by `src/server/notification-service.ts`. |
 | `src/components/NotificationBell.tsx` | Bell, panel, row actions, swipe, Undo. |
 | `src/components/NotificationsSettings.tsx` | The Settings tab. |
 | `src/components/ReminderPicker.tsx` | Remind me, per maintenance item. |
@@ -163,5 +166,5 @@ Code: `src/server/notification-service.ts` (the bell's routes),
   - The Idempotency-Key is a random UUID kept in the sent-today record and
     reused on a retry. *Send a test* uses a new one each time, three an hour.
 - **Variables** (all optional; without them nothing is emailed and builds still
-  pass): `SOCLE_API_URL`, `SOCLE_API_KEY`, `CRON_SECRET`. The UI also needs
-  `NEXT_PUBLIC_NOTIFICATIONS_MODE=live`.
+  pass): `SOCLE_API_URL`, `SOCLE_API_KEY`, `CRON_SECRET`. The UI is live
+  by default.

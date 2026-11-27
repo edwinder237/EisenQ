@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { itemReminderSchema } from "~/lib/notifications/schema";
-import { badRequest } from "~/server/notifications-stub";
+import { badRequest } from "~/server/notifications-http";
 import { NotificationError, getItemReminder, setItemReminder } from "~/server/notification-service";
 
 export const dynamic = "force-dynamic";
