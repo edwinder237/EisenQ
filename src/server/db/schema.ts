@@ -1,4 +1,5 @@
 import type { ObjectId } from "mongodb";
+import type { NotificationPreferences, ReminderLead } from "~/lib/notifications/types";
 
 export type TaskQuadrant = "urgent-important" | "important-not-urgent" | "urgent-not-important" | "not-urgent-not-important";
 export type TaskPriority = "high" | "medium" | "low";
@@ -156,6 +157,7 @@ export interface MaintenanceItem {
   lastCompletedDate?: string;   // ISO date "YYYY-MM-DD"
   nextDueDate: string;          // ISO date "YYYY-MM-DD"
   checklists?: RoutineChecklistRef[]; // copied fresh onto a run each time the item comes due
+  reminderLead?: ReminderLead;  // "Remind me" heads-up for notifications; unset = the default from preferences
   userId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -186,7 +188,42 @@ export interface UserSettings {
   // AI connectors (MCP). Absent until the user first saves the AI connectors
   // tab; readers fill in defaults with normalizeMcpSettings().
   mcp?: McpSettings;
+  // Notifications (docs/notifications/README.md). Absent until first saved;
+  // readers fill gaps from DEFAULT_NOTIFICATION_PREFERENCES. The digest's
+  // address is never stored: it's always the Clerk primary email.
+  notifications?: {
+    events?: Partial<NotificationPreferences["events"]>;
+    defaultLead?: NotificationPreferences["defaultLead"];
+    digest?: { enabled?: boolean; sendAt?: string };
+  };
+  // The daily email's sent-today record: one per person, for their latest
+  // local day. At most one digest per day. `key` is the Idempotency-Key, a
+  // random UUID made when the day's record is created and reused on a retry,
+  // so Socle never sends that day twice.
+  notificationDigest?: DigestRecord;
   createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface DigestRecord {
+  day: string;          // the person's local "YYYY-MM-DD"
+  key: string;          // random UUID, sent as the Idempotency-Key
+  // sending: a run holds it. pending: Socle was unavailable, the next run
+  // retries with the same key. The others are final for the day.
+  status: "sending" | "pending" | "sent" | "empty" | "refused" | "no-email";
+  claimedAt?: Date;
+}
+
+// Per-notification state for one person, keyed by the derived id from
+// deriveNotifications() ("task_overdue:<taskId>", …). Notifications themselves
+// are derived, never stored, so this holds only what the person did to one.
+export interface NotificationState {
+  _id?: ObjectId;
+  userId: string;
+  id: string;
+  readAt?: Date;
+  hiddenUntil?: Date | "forever";          // absent: shown
+  previousHiddenUntil?: Date | "forever" | null; // for Undo: what hiddenUntil held before the last change
   updatedAt: Date;
 }
 
@@ -248,4 +285,5 @@ export const collections = {
   checklistItems: "checklistItems",
   maintenanceItems: "maintenanceItems",
   userSettings: "userSettings",
+  notificationStates: "notificationStates",
 } as const;
