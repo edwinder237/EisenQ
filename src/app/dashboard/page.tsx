@@ -8,6 +8,12 @@ import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
 import { useConfirm } from "~/components/ConfirmDialog";
+import { NotificationBell } from "~/components/NotificationBell";
+import { NotificationsSettings, notificationPrefsEqual } from "~/components/NotificationsSettings";
+import { ReminderPicker } from "~/components/ReminderPicker";
+import { createMockNotificationsApi, getNotificationsMode, liveNotificationsApi, type NotificationsMode } from "~/lib/notifications/client";
+import type { DeriveInput } from "~/lib/notifications/derive";
+import { REMINDER_LEAD_LABELS, type NotificationPreferences, type NotificationTarget } from "~/lib/notifications/types";
 import { PlanningGrid } from "~/components/PlanningGrid";
 import type { AssistantRunView } from "~/lib/delegate-prototype";
 import { carriesOver, intervalLabel, missedDates, missedLabel, relativeDayLabel, weeklyLabel } from "~/lib/routine";
@@ -358,6 +364,8 @@ const ROW_TITLE = "text-[13.5px] leading-[20px] min-w-0 break-words";
 // connects to, in one list with a status each, so they're easy to manage).
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General" },
+  // Shown only while notifications are on (mock or live); see ~/lib/notifications.
+  { id: "notifications", label: "Notifications" },
   { id: "integrations", label: "Integrations" },
 ] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number]["id"];
@@ -635,6 +643,21 @@ export default function HomePage() {
   const [showMaintenanceForm, setShowMaintenanceForm] = useState(false);
   const [editingMaintenanceItem, setEditingMaintenanceItem] = useState<MaintenanceItem | null>(null);
   const [maintenanceFormData, setMaintenanceFormData] = useState({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
+
+  // ===== Notifications =====
+  // Off unless NEXT_PUBLIC_NOTIFICATIONS_MODE or ?notifications=mock|live says
+  // otherwise. Read after mount: it depends on the URL and localStorage.
+  const [notifMode, setNotifMode] = useState<NotificationsMode>("off");
+  useEffect(() => { setNotifMode(getNotificationsMode()); }, []);
+  // What the mock derives from; refreshed every render so it's never stale.
+  const notifSourceRef = useRef<Omit<DeriveInput, "now" | "prefs" | "itemLeads">>({ tasks: [], maintenance: [], missedRoutines: [] });
+  const notifEmail = user?.primaryEmailAddress?.emailAddress;
+  const notifApi = useMemo(
+    () => (notifMode === "live" ? liveNotificationsApi : notifMode === "mock" ? createMockNotificationsApi(() => notifSourceRef.current, notifEmail) : null),
+    [notifMode, notifEmail],
+  );
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences | null>(null);
+  const [draftNotifPrefs, setDraftNotifPrefs] = useState<NotificationPreferences | null>(null);
   const [paymentsData, setPaymentsData] = useState<PaymentsDueData | null>(null);
   const [paymentsError, setPaymentsError] = useState(false);
   // Which day the payments bar is showing. Always a local calendar date.
@@ -1267,10 +1290,17 @@ export default function HomePage() {
     draftMyndlistUrl.trim() !== myndlistApiUrl ||
     draftMyndlistKey.trim() !== myndlistApiKey ||
     draftFinanceUserId.trim() !== financeUserId ||
-    !mcpConfigEqual(draftMcp, mcpConfig);
+    !mcpConfigEqual(draftMcp, mcpConfig) ||
+    !notificationPrefsEqual(draftNotifPrefs, notifPrefs);
 
   // Apply all staged Settings drafts at once
   const handleSaveSettings = () => {
+    if (notifApi && draftNotifPrefs && !notificationPrefsEqual(draftNotifPrefs, notifPrefs)) {
+      notifApi.savePreferences(draftNotifPrefs).then(
+        (saved) => { setNotifPrefs(saved); setDraftNotifPrefs(saved); },
+        (e: unknown) => toast.error(e instanceof Error ? e.message : "Couldn't save notification settings"),
+      );
+    }
     const loc = locationInput.trim();
     if (loc && loc !== weatherLocation) {
       setWeatherLocation(loc);
@@ -1666,6 +1696,21 @@ export default function HomePage() {
     .filter(carriesOver)
     .map(item => ({ item, missed: missedDates(item, todayStr) }))
     .filter(c => c.missed.length > 0);
+
+  // Notifications read from the same data the dashboard shows.
+  notifSourceRef.current = {
+    tasks,
+    maintenance: maintenanceItems,
+    missedRoutines: carriedChecklistItems.map(({ item, missed }) => ({ _id: item._id, title: item.title, missed })),
+  };
+  const notifRefreshKey = useMemo(
+    () => [
+      tasks.map(t => `${t._id}${t.status}${t.dueDate ?? ""}${t.archivedAt ?? ""}`).join(),
+      maintenanceItems.map(m => `${m._id}${m.nextDueDate}${m.lastCompletedDate ?? ""}`).join(),
+      checklistItems.map(c => `${c._id}${c.completedDates.length}${c.caughtUpThrough ?? ""}`).join(),
+    ].join("|"),
+    [tasks, maintenanceItems, checklistItems],
+  );
 
   // Create today's runs for routine items with checklists attached (idempotent).
   const ensureRoutineRuns = async () => {
@@ -3640,7 +3685,35 @@ export default function HomePage() {
     setDraftFinanceUrl(financeApiUrl); setDraftFinanceKey(financeApiKey); setDraftFinanceUserId(financeUserId); setFinanceTestResult(null);
     setDraftMyndlistUrl(myndlistApiUrl); setDraftMyndlistKey(myndlistApiKey); setMyndlistTestResult(null);
     setDraftMcp(mcpConfig);
+    setDraftNotifPrefs(notifPrefs);
+    if (notifApi) {
+      notifApi.getPreferences().then(
+        (p) => { setNotifPrefs(p); setDraftNotifPrefs(p); },
+        () => { setNotifPrefs(null); setDraftNotifPrefs(null); },
+      );
+    }
     setSettingsSection(section); setIntegrationView(view); void fetchArchivedTasks(); setIsSettingsOpen(true);
+  };
+
+  // Where tapping a notification goes.
+  const openNotificationTarget = (target: NotificationTarget) => {
+    if (target.type === "task") {
+      const task = tasks.find(t => t._id === target.id);
+      if (task) void openTaskForEdit(task);
+      else toast.error("That task no longer exists");
+    } else if (target.type === "maintenance") {
+      const m = maintenanceItems.find(i => i._id === target.id);
+      setChecklistTab("maintenance");
+      setRoutineDrawerOpen(true);
+      if (m) {
+        setEditingMaintenanceItem(m);
+        setMaintenanceFormData({ title: m.title, description: m.description ?? "", intervalDays: m.intervalDays, nextDueDate: m.nextDueDate, checklists: m.checklists ?? [] });
+        setShowMaintenanceForm(true);
+      }
+    } else if (target.type === "routine") {
+      setChecklistTab("today");
+      setRoutineDrawerOpen(true);
+    }
   };
 
   // Apply one assistant suggestion through the same paths the matrix uses.
@@ -4049,6 +4122,15 @@ export default function HomePage() {
                 <button className="navbtn" onClick={() => setIsAssistantOpen(true)} title="Assistant">
                   <Sparkles className="w-[17px] h-[17px]" />
                 </button>
+              )}
+              {notifApi && (
+                <NotificationBell
+                  api={notifApi}
+                  refreshKey={notifRefreshKey}
+                  onOpen={openNotificationTarget}
+                  onMarkTaskDone={(id) => { const t = tasks.find(x => x._id === id); if (t && t.status !== "completed") void handleToggleComplete(t); }}
+                  onOpenSettings={() => openSettings("notifications")}
+                />
               )}
               <button className="navbtn" onClick={() => setIsCalendarDrawerOpen(true)} title="Today's calendar">
                 <CalendarDays className="w-[17px] h-[17px]" />
@@ -5822,6 +5904,17 @@ export default function HomePage() {
                       : editing ? "Marking it done moves this forward automatically." : "Leave empty to start one interval from today."}
                   </div>
                 </div>
+                {notifApi && (
+                  <div className="mb-3.5">
+                    {label("Remind me")}
+                    {editing ? (
+                      <ReminderPicker api={notifApi} kind="maintenance" itemId={editing._id}
+                        defaultLabel={REMINDER_LEAD_LABELS[notifPrefs?.defaultLead ?? "2_days"]} />
+                    ) : (
+                      <div className="text-[12px]" style={{ color: "var(--muted)" }}>Uses your default heads-up. You can change it after adding.</div>
+                    )}
+                  </div>
+                )}
                 <div className="mb-3.5">
                   {label("Notes · optional")}
                   <textarea placeholder="Shown from the routine card" value={maintenanceFormData.description} rows={2}
@@ -7214,7 +7307,7 @@ export default function HomePage() {
             {/* nav + pane. Only the pane scrolls, so the footer never leaves. */}
             <div className="flex-1 min-h-0 flex flex-col sm:flex-row">
               <nav className="shrink-0 sm:w-[168px] flex sm:flex-col gap-1 overflow-x-auto p-2.5 border-b sm:border-b-0 sm:border-r border-[var(--line2)]">
-                {SETTINGS_SECTIONS.map((sec) => {
+                {SETTINGS_SECTIONS.filter((sec) => sec.id !== "notifications" || notifApi).map((sec) => {
                   const active = settingsSection === sec.id;
                   return (
                     <button key={sec.id} onClick={() => { setSettingsSection(sec.id); setIntegrationView(null); }}
@@ -7292,6 +7385,9 @@ export default function HomePage() {
                 </div>
               )}
 
+              {settingsSection === "notifications" && notifApi && (
+                <NotificationsSettings api={notifApi} draft={draftNotifPrefs} onChange={setDraftNotifPrefs} />
+              )}
               {settingsSection === "general" && (
               <div>
                 <label className="block text-[13px] font-semibold mb-1.5" style={{ color: "var(--ink2)" }}>Completed tasks</label>
