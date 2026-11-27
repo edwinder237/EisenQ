@@ -2,7 +2,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { preferencesSchema } from "~/lib/notifications/schema";
 import type { NotificationPreferences } from "~/lib/notifications/types";
-import { badRequest } from "~/server/notifications-stub";
+import { badRequest } from "~/server/notifications-http";
 import { clerkPrimaryEmail } from "~/server/notification-access";
 import { loadContext, savePreferences } from "~/server/notification-service";
 

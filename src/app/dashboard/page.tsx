@@ -364,7 +364,7 @@ const ROW_TITLE = "text-[13.5px] leading-[20px] min-w-0 break-words";
 // connects to, in one list with a status each, so they're easy to manage).
 const SETTINGS_SECTIONS = [
   { id: "general", label: "General" },
-  // Shown only while notifications are on (mock or live); see ~/lib/notifications.
+  // Hidden only if notifications are switched off; see ~/lib/notifications.
   { id: "notifications", label: "Notifications" },
   { id: "integrations", label: "Integrations" },
 ] as const;
@@ -645,8 +645,8 @@ export default function HomePage() {
   const [maintenanceFormData, setMaintenanceFormData] = useState({ title: "", description: "", intervalDays: 90, nextDueDate: "", checklists: [] as RoutineChecklistRef[] });
 
   // ===== Notifications =====
-  // Off unless NEXT_PUBLIC_NOTIFICATIONS_MODE or ?notifications=mock|live says
-  // otherwise. Read after mount: it depends on the URL and localStorage.
+  // Live by default (NEXT_PUBLIC_NOTIFICATIONS_MODE can turn it off). Read
+  // after mount: ?notifications= can override it for one page load.
   const [notifMode, setNotifMode] = useState<NotificationsMode>("off");
   useEffect(() => { setNotifMode(getNotificationsMode()); }, []);
   // What the mock derives from; refreshed every render so it's never stale.

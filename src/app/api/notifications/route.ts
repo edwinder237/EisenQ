@@ -2,7 +2,7 @@ import { type NextRequest } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 import { bulkActionSchema } from "~/lib/notifications/schema";
-import { badRequest } from "~/server/notifications-stub";
+import { badRequest } from "~/server/notifications-http";
 import { applyBulk, listNotifications } from "~/server/notification-service";
 
 export const dynamic = "force-dynamic";
