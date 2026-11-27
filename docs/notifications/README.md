@@ -134,3 +134,34 @@ All "today", "tomorrow 09:00" and digest times are in the person's zone. The AI 
 - [ ] Setting an item's Remind me to *1 week* surfaces it 7 days ahead; *Off* never does.
 - [ ] Turning an event's in-app switch off removes those rows. Turning its email switch off removes it from the digest.
 - [ ] No digest is sent on an empty day. *Send a test* always sends.
+
+## Backend (built for `live`)
+
+Code: `src/server/notification-service.ts` (the bell's routes),
+`src/server/notification-digest.ts` (the daily email), `src/server/socle.ts`
+(the only call out), `src/server/notification-access.ts` (who is emailed).
+
+- **Rules:** `deriveNotifications()` runs on the server, on EisenQ's own data,
+  with the person's zone from `UserSettings.mcp.preferences.timeZone` (UTC if
+  never saved). `derive.ts` and `snoozeUntil()` take that zone as an optional
+  last argument; the browser leaves it out.
+- **Stored:** `notificationStates` (per user and id: `readAt`, `hiddenUntil`,
+  `previousHiddenUntil`), `UserSettings.notifications` (preferences, never the
+  address), `UserSettings.notificationDigest` (the sent-today record) and
+  `MaintenanceItem.reminderLead`.
+- **Actions** answer 204; `client.ts` reads a 204 as "no body".
+- **Daily email:** `GET /api/cron/notifications-digest`, every 15 minutes
+  (`vercel.json`), with `Authorization: Bearer <CRON_SECRET>`. It sends through
+  Socle as `eisenq.digest.ready` with counts only:
+  `{ dueCount, comingUpCount, missedRoutinesCount, isTest }`, each capped at
+  999. Never a task name, a date, a time or a time zone. Socle writes the text.
+  - Who: only EisenQ's owner account (the first account in EisenQ's Clerk), for
+    now, and only once they have saved Settings → Notifications with the daily
+    email on.
+  - When: from `digest.sendAt` local, retried for two hours if Socle is down,
+    at most once per local day. Skipped when empty.
+  - The Idempotency-Key is a random UUID kept in the sent-today record and
+    reused on a retry. *Send a test* uses a new one each time, three an hour.
+- **Variables** (all optional; without them nothing is emailed and builds still
+  pass): `SOCLE_API_URL`, `SOCLE_API_KEY`, `CRON_SECRET`. The UI also needs
+  `NEXT_PUBLIC_NOTIFICATIONS_MODE=live`.
