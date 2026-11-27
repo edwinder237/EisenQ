@@ -1,16 +1,22 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
 import { itemReminderSchema } from "~/lib/notifications/schema";
-import { badRequest, notImplemented } from "~/server/notifications-stub";
+import { badRequest } from "~/server/notifications-stub";
+import { NotificationError, getItemReminder, setItemReminder } from "~/server/notification-service";
 
 export const dynamic = "force-dynamic";
+
+function errorResponse(err: unknown) {
+  if (err instanceof NotificationError) return NextResponse.json({ error: err.message }, { status: err.status });
+  return NextResponse.json({ error: "Couldn't load the reminder" }, { status: 500 });
+}
 
 /**
  * GET /api/notifications/reminders?kind=maintenance&itemId=… → ItemReminder
  *
- * TODO(backend): suggested storage is a `reminderLead` field on the
- * MaintenanceItem (and later routine) document; null = use the default lead.
- * Check the item belongs to userId.
+ * Stored as `reminderLead` on the MaintenanceItem; unset (null here) means the
+ * default lead from preferences. The item must be the person's own. Routines
+ * have no override yet, so they always answer null.
  */
 export async function GET(req: NextRequest) {
   const { userId } = await auth();
@@ -18,7 +24,11 @@ export async function GET(req: NextRequest) {
   const kind = req.nextUrl.searchParams.get("kind");
   const itemId = req.nextUrl.searchParams.get("itemId");
   if ((kind !== "maintenance" && kind !== "routine") || !itemId) return badRequest("kind and itemId are required");
-  return notImplemented(`Read the reminder for ${kind} ${itemId}.`);
+  try {
+    return NextResponse.json(await getItemReminder(userId, kind, itemId), { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    return errorResponse(err);
+  }
 }
 
 /** PUT /api/notifications/reminders  ItemReminder → ItemReminder */
@@ -27,5 +37,9 @@ export async function PUT(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const parsed = itemReminderSchema.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return badRequest(parsed.error.issues);
-  return notImplemented(`Save the reminder for ${parsed.data.kind} ${parsed.data.itemId}.`);
+  try {
+    return NextResponse.json(await setItemReminder(userId, parsed.data));
+  } catch (err) {
+    return errorResponse(err);
+  }
 }
