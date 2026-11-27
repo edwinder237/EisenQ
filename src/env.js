@@ -14,6 +14,12 @@ export const env = createEnv({
     NODE_ENV: z
       .enum(["development", "test", "production"])
       .default("development"),
+    // The daily notifications email, sent through Socle
+    // (docs/notifications/README.md). All optional: Production sets them,
+    // Preview and local builds don't, and without them nothing is emailed.
+    SOCLE_API_URL: z.string().url().optional(),
+    SOCLE_API_KEY: z.string().optional(),
+    CRON_SECRET: z.string().optional(),
   },
 
   /**
@@ -33,6 +39,9 @@ export const env = createEnv({
     DATABASE_URL: process.env.DATABASE_URL,
     SETTINGS_ENCRYPTION_KEY: process.env.SETTINGS_ENCRYPTION_KEY,
     NODE_ENV: process.env.NODE_ENV,
+    SOCLE_API_URL: process.env.SOCLE_API_URL,
+    SOCLE_API_KEY: process.env.SOCLE_API_KEY,
+    CRON_SECRET: process.env.CRON_SECRET,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
   /**
