@@ -5,7 +5,7 @@ import {
   userSettingsCollection,
 } from "~/server/db";
 import { logNotifications } from "~/server/notification-access";
-import type { SocleClient } from "~/server/socle";
+import type { CallOptions, SocleClient } from "~/server/socle";
 
 // A deleted EisenQ account (legal's deletion rule, edwinder237/socle,
 // docs/privacy/eisenq-notifications-deletion.md, point 1). Clerk's
@@ -35,6 +35,7 @@ export async function clearNotificationData(userId: string, now: Date) {
         notifications: "",
         notificationDigest: "",
         notificationTests: "",
+        clerkMissingSince: "",
       },
       $set: {
         notificationChannels: { email: false, bell: false, checkedAt: now },
@@ -62,9 +63,10 @@ export async function deleteNotificationsFor(
   userId: string,
   socle: SocleClient | null,
   now = new Date(),
+  call: CallOptions = {},
 ): Promise<"deleted" | "pending"> {
   await clearNotificationData(userId, now);
-  const result = socle ? await socle.deleteRecipient(userId) : null;
+  const result = socle ? await socle.deleteRecipient(userId, call) : null;
   if (result?.kind === "deleted") {
     await notificationDeletionsCollection.deleteMany({ userId });
     return "deleted";

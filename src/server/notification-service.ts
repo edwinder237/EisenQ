@@ -182,6 +182,8 @@ export interface NotificationContext {
   channels?: UserSettings["notificationChannels"];
   /** The daily email's sent-today record, for the latest day it ran. */
   digest?: DigestRecord;
+  /** When the daily job first found no such account in Clerk. */
+  clerkMissingSince?: Date;
 }
 
 /** The fields of a person's UserSettings the notifications read. */
@@ -190,12 +192,17 @@ export const CONTEXT_PROJECTION = {
   notifications: 1,
   notificationChannels: 1,
   notificationDigest: 1,
+  clerkMissingSince: 1,
   "mcp.preferences.timeZone": 1,
 } as const;
 
 export type ContextDoc = Pick<
   UserSettings,
-  "notifications" | "notificationChannels" | "notificationDigest" | "mcp"
+  | "notifications"
+  | "notificationChannels"
+  | "notificationDigest"
+  | "clerkMissingSince"
+  | "mcp"
 >;
 
 /** The context from a UserSettings document already read (the daily job's pages). */
@@ -211,6 +218,7 @@ export function contextFrom(
     prefs: normalizePreferences(doc?.notifications, doc?.notificationChannels),
     ...(doc?.notificationChannels ? { channels: doc.notificationChannels } : {}),
     ...(doc?.notificationDigest ? { digest: doc.notificationDigest } : {}),
+    ...(doc?.clerkMissingSince ? { clerkMissingSince: doc.clerkMissingSince } : {}),
   };
 }
 

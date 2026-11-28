@@ -259,28 +259,80 @@ describe("the daily summary, for every account", () => {
     expect(clerk.users.getUser).toHaveBeenCalledTimes(1);
   });
 
-  it("an account deleted in Clerk without EisenQ hearing of it is deleted, not sent to", async () => {
-    // A settings row with no copy reads as "bell on".
+  describe("an account Clerk says it doesn't have (404)", () => {
     const GONE = "user_2goneGoneGoneGone000005";
-    await seedSettings(GONE);
-    await overdueTask(GONE);
-    await notificationStatesCollection.insertOne({ userId: GONE, id: "task_overdue:x", readAt: AT_SEVEN, updatedAt: AT_SEVEN });
-    vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE] }) as never);
+    const at = (minutes: number) => new Date(AT_SEVEN.getTime() + minutes * 60_000);
+    const theirs = () => userSettingsCollection.findOne({ userId: GONE });
 
-    expect(await run()).toMatchObject({ outcomes: { "account-deleted": 1, empty: 1 } });
-    // Nothing reached Socle for them but the deletion.
-    expect(socle.calls.map((c) => [c.path, c.body.recipientId])).toEqual([
-      ["/recipients/delete", GONE],
-    ]);
-    expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(0);
-    const theirs = await userSettingsCollection.findOne({ userId: GONE });
-    expect(theirs?.notificationChannels).toMatchObject({ email: false, bell: false });
-    expect(theirs?.notificationDigest).toBeUndefined();
+    beforeEach(async () => {
+      // A settings row with no copy reads as "bell on".
+      await seedSettings(GONE);
+      await overdueTask(GONE);
+      await notificationStatesCollection.insertOne({ userId: GONE, id: "task_overdue:x", readAt: AT_SEVEN, updatedAt: AT_SEVEN });
+      vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE] }) as never);
+    });
 
-    // From then on, they aren't read at all.
-    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
-    expect(socle.calls).toHaveLength(1);
-    expect(logs.join("\n")).not.toContain(GONE);
+    it("is only marked at the first 404, deleted at a 404 an hour later, and never sent to", async () => {
+      expect(await run(at(0))).toMatchObject({
+        outcomes: { "missing-in-clerk": 1, empty: 1 },
+        clerkMissing: { marked: 1, deleted: 0, misconfigured: false },
+      });
+      expect((await theirs())?.clerkMissingSince).toEqual(at(0));
+      expect((await record(GONE))?.status).toBe("pending");
+      expect(socle.calls).toEqual([]);
+
+      // Half an hour on: still within the hour, still nothing done.
+      expect(await run(at(30))).toMatchObject({
+        outcomes: { "missing-in-clerk": 1 },
+        clerkMissing: { marked: 0, deleted: 0 },
+      });
+      expect(socle.calls).toEqual([]);
+      expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(1);
+
+      // An hour after the first 404: deleted, here and in Socle, and nothing else reached Socle.
+      expect(await run(at(60))).toMatchObject({ clerkMissing: { marked: 0, deleted: 1 } });
+      expect(socle.calls.map((c) => [c.path, c.body.recipientId])).toEqual([["/recipients/delete", GONE]]);
+      expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(0);
+      expect((await theirs())?.notificationChannels).toMatchObject({ email: false, bell: false });
+      expect((await theirs())?.notificationDigest).toBeUndefined();
+
+      // From then on, they aren't read at all.
+      expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
+      expect(socle.calls).toHaveLength(1);
+      expect(logs.join("\n")).toContain('"event":"digest_clerk_missing","marked":1,"deleted":0');
+      expect(logs.join("\n")).not.toContain(GONE);
+    });
+
+    it("has its mark cleared when Clerk finds the account again", async () => {
+      await run(at(0));
+      expect((await theirs())?.clerkMissingSince).toEqual(at(0));
+      vi.mocked(clerkClient).mockResolvedValue(fakeClerk() as never);
+      expect(await run(at(70))).toMatchObject({ outcomes: { sent: 1 } });
+      expect((await theirs())?.clerkMissingSince).toBeUndefined();
+      expect(socle.to("/recipients/delete")).toEqual([]);
+    });
+
+    it("isn't acted on when more than 5 people get a 404 in one run: Clerk looks misconfigured", async () => {
+      const ids = [1, 2, 3, 4, 5].map((n) => `user_2manyManyMany0000${n}`);
+      for (const id of ids) {
+        await seedSettings(id, { clerkMissingSince: at(-120) });
+        await overdueTask(id);
+      }
+      vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE, ...ids] }) as never);
+      expect(await run(at(0))).toMatchObject({
+        outcomes: { "missing-in-clerk": 6 },
+        clerkMissing: { marked: 0, deleted: 0, misconfigured: true },
+      });
+      // Nobody marked, nobody deleted, nothing sent.
+      expect((await theirs())?.clerkMissingSince).toBeUndefined();
+      expect(socle.calls).toEqual([]);
+      for (const id of ids)
+        expect((await userSettingsCollection.findOne({ userId: id }))?.notificationsDeletedAt).toBeUndefined();
+      const all = logs.join("\n");
+      expect(all.match(/digest_clerk_misconfigured/g)).toHaveLength(1);
+      expect(all).toContain('"event":"digest_clerk_misconfigured","count":6');
+      for (const id of [GONE, ...ids]) expect(all).not.toContain(id);
+    });
   });
 
   it("one that turned email off from an email's link gets no email the next day", async () => {

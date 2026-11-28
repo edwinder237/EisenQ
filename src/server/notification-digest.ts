@@ -71,6 +71,11 @@ const MIN_CALL_MS = 500;
 // (digest_window_missed), reading at most 10 more pages.
 const RUN_EVERY_MS = 15 * 60_000;
 const MISSED_SCAN_PAGES = 10;
+// An account Clerk says it doesn't have (404) is deleted only on a second 404
+// at least an hour after the first, and only if the run saw at most 5: more
+// than that looks like a Clerk key for the wrong instance, not deletions.
+export const CLERK_MISSING_CONFIRM_MS = 60 * 60_000;
+export const CLERK_MISSING_TRIP = 5;
 const FINAL: ReadonlySet<DigestRecord["status"]> = new Set([
   "sent",
   "empty",
@@ -166,7 +171,8 @@ export type DigestOutcome =
   | "opted-out" // email and bell both off in Socle: nothing sent
   | "no-email" // email on, but no verified address: nothing sent
   | "refused" // Socle refused it: not retried today
-  | "account-deleted" // gone from Clerk: deleted here and in Socle instead
+  | "missing-in-clerk" // Clerk answered 404: nothing sent; the run's end decides (settleMissing)
+  | "account-deleted" // deleted while the run was on them: nothing sent
   | "unavailable"; // Socle or Clerk unreachable: the next run retries, same key
 
 export interface DigestRunSummary {
@@ -182,6 +188,8 @@ export interface DigestRunSummary {
   deletions?: { done: number; pending: number };
   /** When capped: people not reached whose window closes before the next run, so who get nothing today. */
   windowMissed?: number;
+  /** People Clerk answered 404 for: newly marked, deleted on a second 404, or none of it because Clerk looked misconfigured. */
+  clerkMissing?: { marked: number; deleted: number; misconfigured: boolean };
 }
 
 export interface DigestRunOptions {
@@ -196,9 +204,13 @@ export interface DigestRunOptions {
   elapsed?: () => number;
 }
 
-/** What one person's summary may use: the hooks, and the time left in the run. */
+/** Someone Clerk answered 404 for this run, and since when it has (their mark, if any). */
+type MissingInClerk = { userId: string; since?: Date };
+
+/** What one person's summary may use: the hooks, the time left in the run, and where to note a 404. */
 type PersonOptions = Pick<DigestRunOptions, "addressFor" | "sleep"> & {
   left: () => number;
+  missing: MissingInClerk[];
 };
 
 class OutOfTime extends Error {
@@ -369,11 +381,18 @@ async function sendClaimed(
     return done("unavailable");
   }
   if (address.kind === "gone") {
-    logNotifications("info", "digest_account_gone");
-    // Clears the day's record too, and leaves both switches off.
-    await deleteNotificationsFor(userId, socle, now);
-    return done("account-deleted", true);
+    // Nothing goes, and nothing is decided yet: the run's end marks or
+    // deletes them once it knows how many 404s it saw (settleMissing). Their
+    // day stays open, so a later run asks Clerk again.
+    opts.missing.push({ userId, ...(ctx.clerkMissingSince ? { since: ctx.clerkMissingSince } : {}) });
+    await settle("pending");
+    return done("missing-in-clerk");
   }
+  // Clerk knows them: an earlier 404 was a blip.
+  if (ctx.clerkMissingSince)
+    await userSettingsCollection
+      .updateOne({ userId }, { $unset: { clerkMissingSince: "" } })
+      .catch(() => undefined);
 
   // The person's switches, as Socle holds them now.
   if (opts.left() < MIN_CALL_MS) return outOfTime(false);
@@ -481,12 +500,19 @@ export async function runDigests(
   const maxPeople = opts.maxPeople ?? MAX_PEOPLE_PER_RUN;
   const budgetMs = opts.budgetMs ?? RUN_BUDGET_MS;
   const finish = (summary: DigestRunSummary) => {
-    const { outcomes, deletions, ...rest } = summary;
+    const { outcomes, deletions, clerkMissing, ...rest } = summary;
     logNotifications("info", "digest_run", {
       ...rest,
       ...outcomes,
       ...(deletions
         ? { deletionsDone: deletions.done, deletionsPending: deletions.pending }
+        : {}),
+      ...(clerkMissing
+        ? {
+            clerkMissingMarked: clerkMissing.marked,
+            clerkMissingDeleted: clerkMissing.deleted,
+            clerkMisconfigured: clerkMissing.misconfigured,
+          }
         : {}),
     });
     return summary;
@@ -495,7 +521,8 @@ export async function runDigests(
   const socle = opts.socle;
   if (!socle) return finish({ status: "off", reason: "socle-not-configured" });
   const left = () => Math.max(0, RUN_DEADLINE_MS - elapsed());
-  const person: PersonOptions = { ...opts, left };
+  const missing: MissingInClerk[] = [];
+  const person: PersonOptions = { ...opts, left, missing };
 
   // Deleted accounts Socle hasn't confirmed yet go first (legal's deletion
   // rule), in the run's first seconds only.
@@ -542,6 +569,8 @@ export async function runDigests(
     }
     if (page.length < pageSize) break;
   }
+  const clerkMissing =
+    missing.length > 0 ? await settleMissing(missing, socle, now, left) : undefined;
   const windowMissed = capped
     ? await countClosingWindows(after, now, pageSize, left)
     : 0;
@@ -554,7 +583,54 @@ export async function runDigests(
     capped,
     deletions,
     ...(capped ? { windowMissed } : {}),
+    ...(clerkMissing ? { clerkMissing } : {}),
   });
+}
+
+/**
+ * The run's 404s from Clerk, once it knows how many. More than 5: Clerk looks
+ * misconfigured (a key for the wrong instance, say), so nobody is marked or
+ * deleted, and one warning gives the count. Otherwise each first 404 marks the
+ * person (clerkMissingSince), and a 404 at least an hour after their mark
+ * deletes their notifications, here and in Socle. Counts only in the logs.
+ */
+async function settleMissing(
+  missing: MissingInClerk[],
+  socle: SocleClient,
+  now: Date,
+  left: () => number,
+): Promise<NonNullable<DigestRunSummary["clerkMissing"]>> {
+  if (missing.length > CLERK_MISSING_TRIP) {
+    logNotifications("warn", "digest_clerk_misconfigured", { count: missing.length });
+    return { marked: 0, deleted: 0, misconfigured: true };
+  }
+  let marked = 0;
+  let deleted = 0;
+  for (const { userId, since } of missing) {
+    try {
+      if (!since) {
+        const r = await userSettingsCollection.updateOne(
+          {
+            userId,
+            clerkMissingSince: { $exists: false },
+            notificationsDeletedAt: { $exists: false },
+          },
+          { $set: { clerkMissingSince: now } },
+        );
+        marked += r.modifiedCount;
+      } else if (now.getTime() - since.getTime() >= CLERK_MISSING_CONFIRM_MS) {
+        // Socle's part may wait for the deletions' retries if time is short.
+        if (left() < MIN_CALL_MS) break;
+        await deleteNotificationsFor(userId, socle, now, { timeoutMs: left() });
+        deleted++;
+      }
+    } catch (err) {
+      logNotifications("error", "digest_person_failed", { errorName: errorNameOf(err) });
+    }
+  }
+  if (marked + deleted > 0)
+    logNotifications("info", "digest_clerk_missing", { marked, deleted });
+  return { marked, deleted, misconfigured: false };
 }
 
 const POPULATION = {

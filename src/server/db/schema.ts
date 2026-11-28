@@ -215,6 +215,10 @@ export interface UserSettings {
   // Set when the account was deleted (Clerk's event, or Clerk's 404): its
   // notification data is gone and nothing may write it back.
   notificationsDeletedAt?: Date;
+  // When the daily job first found no such account in Clerk. A second 404 at
+  // least an hour later deletes its notifications; Clerk finding it clears
+  // this. No ID is ever logged with it.
+  clerkMissingSince?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
