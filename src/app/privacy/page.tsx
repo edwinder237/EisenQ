@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { Fragment, type ReactNode } from "react";
 import { PaperTheme } from "~/app/help/integrations/PaperTheme";
 import {
@@ -8,14 +9,18 @@ import {
   PRIVACY_OFFICER,
   placeholderWords,
   privacyContact,
+  privacyNoticePublished,
   type NoticeLanguage,
-  type PrivacyContact,
 } from "~/lib/privacy-notice";
 
 // /privacy: EisenQ's privacy notice, notifications section, in English and
 // French (legal's text, ~/lib/privacy-notice.ts). Public, so anyone can read
 // it before signing up or from an email. Linked from Settings → Notifications
 // and from the landing page's footer. Same look as /help/integrations.
+//
+// Only with a contact address (NEXT_PUBLIC_PRIVACY_CONTACT): without one it
+// answers 404 and nothing links to it, because a notice with no contact
+// information doesn't meet Law 25, s. 3.1 (legal, edwinder237/socle#65).
 
 export const metadata: Metadata = {
   title: "Privacy notice · EisenQ",
@@ -24,7 +29,9 @@ export const metadata: Metadata = {
 
 const LANGUAGES: Record<NoticeLanguage, string> = { en: "English", fr: "Français" };
 
-function Filled({ text, lang, contact }: { text: string; lang: NoticeLanguage; contact: PrivacyContact }) {
+type Contact = { officer: string | null; email: string };
+
+function Filled({ text, lang, contact }: { text: string; lang: NoticeLanguage; contact: Contact }) {
   const words = placeholderWords(lang, contact);
   return (
     <>
@@ -33,9 +40,7 @@ function Filled({ text, lang, contact }: { text: string; lang: NoticeLanguage; c
           {part === PRIVACY_OFFICER
             ? words.officer
             : part === PRIVACY_CONTACT
-              ? contact.email
-                ? <>{words.contactBefore}<a href={`mailto:${contact.email}`} className="hover:underline" style={{ color: "var(--accent)" }}>{contact.email}</a></>
-                : words.contactFallback
+              ? <>{words.contactBefore}<a href={`mailto:${contact.email}`} className="hover:underline" style={{ color: "var(--accent)" }}>{contact.email}</a></>
               : part}
         </Fragment>
       ))}
@@ -49,6 +54,7 @@ function Lead({ children }: { children: ReactNode }) {
 
 export default function PrivacyPage() {
   const contact = privacyContact();
+  if (!privacyNoticePublished(contact)) notFound();
   return (
     <main className="min-h-screen px-4 sm:px-6 pb-24">
       <PaperTheme />

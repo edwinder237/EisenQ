@@ -5,12 +5,15 @@
 // field, task names, a new provider, tracking) changes this text first, after
 // a new legal review.
 //
-// Two placeholders, filled from optional public variables so no one's name or
-// address sits in the code:
+// Two placeholders, filled from public variables so no one's name or address
+// sits in the code:
 // - {{PRIVACY_OFFICER}}: NEXT_PUBLIC_PRIVACY_OFFICER, the person in charge of
-//   protecting personal information. Unset: "EisenQ's developer".
-// - {{PRIVACY_CONTACT}}: NEXT_PUBLIC_PRIVACY_CONTACT, their address. Unset:
-//   "through your account settings".
+//   protecting personal information. Optional: unset, the title "EisenQ's
+//   developer", which legal accepts (a title is enough).
+// - {{PRIVACY_CONTACT}}: NEXT_PUBLIC_PRIVACY_CONTACT, their address. Required:
+//   without a plain address the notice has no contact information (Law 25,
+//   s. 3.1; PIPEDA 4.8.2, legal on edwinder237/socle#65), so /privacy answers
+//   404 and nothing links to it (privacyNoticePublished()).
 
 export type NoticeLanguage = "en" | "fr";
 
@@ -135,6 +138,11 @@ export function privacyContactFrom(source: {
   };
 }
 
+/** Whether /privacy is published: only with a contact address. Nothing links to it otherwise. */
+export function privacyNoticePublished(contact: PrivacyContact = privacyContact()): contact is PrivacyContact & { email: string } {
+  return contact.email !== null;
+}
+
 export function privacyContact(): PrivacyContact {
   // Read directly: Next inlines NEXT_PUBLIC_ values at build time.
   return privacyContactFrom({
@@ -147,7 +155,6 @@ export function privacyContact(): PrivacyContact {
 export function placeholderWords(lang: NoticeLanguage, contact: PrivacyContact) {
   return {
     officer: contact.officer ?? (lang === "fr" ? "le développeur d'EisenQ" : "EisenQ's developer"),
-    contactBefore: contact.email ? (lang === "fr" ? "à l'adresse " : "at ") : "",
-    contactFallback: lang === "fr" ? "par les paramètres de votre compte" : "through your account settings",
+    contactBefore: lang === "fr" ? "à l'adresse " : "at ",
   };
 }

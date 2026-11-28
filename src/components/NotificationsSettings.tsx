@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import toast from "react-hot-toast";
+import { privacyNoticePublished } from "~/lib/privacy-notice";
 import type { NotificationsApi } from "~/lib/notifications/client";
 import {
   REMINDER_LEAD_LABELS,
@@ -178,10 +179,13 @@ export function NotificationsSettings({ api, draft, onChange }: {
             Couldn&apos;t load your email and bell choices just now, so they can&apos;t be changed. Try again later.
           </div>
         )}
-        <p className="text-[12px] mt-3" style={{ color: "var(--muted)" }}>
-          The daily email and bell notices are optional, and you can turn them off here at any time.{" "}
-          <a href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>Privacy notice</a>
-        </p>
+        {/* Only once the notice has its contact address (~/lib/privacy-notice.ts). */}
+        {privacyNoticePublished() && (
+          <p className="text-[12px] mt-3" style={{ color: "var(--muted)" }}>
+            The daily email and bell notices are optional, and you can turn them off here at any time.{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>Privacy notice</a>
+          </p>
+        )}
       </section>
     </div>
   );
