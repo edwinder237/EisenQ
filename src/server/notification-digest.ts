@@ -15,6 +15,8 @@ import {
 } from "~/server/notification-access";
 import {
   deleteNotificationsFor,
+  isNotificationsDeleted,
+  requeueDeletion,
   retryPendingDeletions,
 } from "~/server/notification-deletion";
 import { channelsFrom } from "~/server/notification-preferences";
@@ -336,7 +338,7 @@ type Claimed = {
   settle: (
     status: DigestRecord["status"],
     nextKey?: string,
-  ) => Promise<unknown>;
+  ) => Promise<{ matchedCount: number }>;
   done: (outcome: DigestOutcome, calledSocle?: boolean) => PersonResult;
 };
 
@@ -429,6 +431,16 @@ async function sendClaimed(
 
   const event = { idempotencyKey: key, recipient, counts };
   if (opts.left() < MIN_CALL_MS) return outOfTime(true);
+  // Once the event may have reached Socle: if the record is gone because the
+  // account was deleted meanwhile (Clerk's event), Socle's delete ran before
+  // this event, so the ID goes back on the deletions list to run it again.
+  const settleSent = async (status: DigestRecord["status"], nextKey?: string) => {
+    const r = await settle(status, nextKey);
+    if (r.matchedCount === 0 && (await isNotificationsDeleted(userId))) {
+      logNotifications("warn", "digest_sent_after_deletion");
+      await requeueDeletion(userId, now);
+    }
+  };
   let result = await socle.sendDigestEvent(event, { timeoutMs: opts.left() });
   if (retryable(result)) {
     const waitS =
@@ -442,7 +454,7 @@ async function sendClaimed(
   }
 
   if (result.kind === "accepted") {
-    await settle("sent");
+    await settleSent("sent");
     if (result.eventId)
       logNotifications("info", "digest_sent", { eventId: result.eventId });
     // An address went, but Socle sent no email: its email is off now.
@@ -454,12 +466,12 @@ async function sendClaimed(
   }
   const problem = result.kind === "problem" ? result : null;
   if (problem?.status === 422 && problem.type === "idempotency-key-reused") {
-    await settle("sent");
+    await settleSent("sent");
     return done("sent", true);
   }
   logRefusal("digest_refused", result);
   if (problem?.status === 409 && problem.type === "recipient-opted-out") {
-    await settle("opted-out");
+    await settleSent("opted-out");
     await saveChannelsCopy(userId, { email: false, bell: false }, now).catch(
       () => undefined,
     );
@@ -473,16 +485,16 @@ async function sendClaimed(
   ) {
     // Email went on between the look-up and the send. The next run looks
     // again and sends with the address, under a new key, as Socle asks.
-    await settle("pending", randomUUID());
+    await settleSent("pending", randomUUID());
     return done("unavailable", true);
   }
   if (retryable(result)) {
     // Socle is down: the next run within the window tries again, same key.
-    await settle("pending");
+    await settleSent("pending");
     return done("unavailable", true);
   }
   // event-type-unknown, event-type-off, or another refusal: not retried today.
-  await settle("refused");
+  await settleSent("refused");
   return done("refused", true);
 }
 

@@ -46,6 +46,25 @@ export async function clearNotificationData(userId: string, now: Date) {
   );
 }
 
+/**
+ * Puts the person on the deletions list (again), for the daily job to send
+ * Socle's delete: after a failure, or after an event that reached Socle once
+ * its delete had already run.
+ */
+export async function requeueDeletion(userId: string, now: Date) {
+  await keepPending(userId, now);
+}
+
+/** Whether the account's notifications were deleted (the tombstone). */
+export async function isNotificationsDeleted(userId: string): Promise<boolean> {
+  return (
+    (await userSettingsCollection.findOne(
+      { userId, notificationsDeletedAt: { $exists: true } },
+      { projection: { _id: 1 } },
+    )) !== null
+  );
+}
+
 async function keepPending(userId: string, now: Date) {
   await notificationDeletionsCollection.updateOne(
     { userId },

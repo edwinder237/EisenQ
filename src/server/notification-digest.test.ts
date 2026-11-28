@@ -12,7 +12,10 @@ import {
   sendTestDigest,
 } from "~/server/notification-digest";
 import { createSocleClient } from "~/server/socle";
-import { clearNotificationData } from "~/server/notification-deletion";
+import {
+  clearNotificationData,
+  deleteNotificationsFor,
+} from "~/server/notification-deletion";
 import {
   applyAction,
   listNotifications,
@@ -21,6 +24,7 @@ import {
 import {
   checklistItemsCollection,
   maintenanceItemsCollection,
+  notificationDeletionsCollection,
   notificationStatesCollection,
   resetFakeDb,
   tasksCollection,
@@ -592,6 +596,31 @@ describe("the daily summary, for every account", () => {
     const early = await run(new Date("2026-11-28T12:05:00Z"), { maxPeople: 1 });
     expect(early).toMatchObject({ capped: true, windowMissed: 0 });
     expect(logs.join("\n")).not.toContain("digest_window_missed");
+  });
+
+  it("an account deleted while its event is on the way gets Socle's delete again, after the event", async () => {
+    await seedSettings(OTHER);
+    await overdueTask(OTHER);
+    const send = socle.socle.sendDigestEvent.bind(socle.socle);
+    vi.spyOn(socle.socle, "sendDigestEvent").mockImplementation(async (event, call) => {
+      // Clerk's event lands, and Socle's delete runs, just before this send reaches Socle.
+      if (event.recipient.id === OTHER) await deleteNotificationsFor(OTHER, socle.socle, AT_SEVEN);
+      return send(event, call);
+    });
+    await run();
+    expect(socle.calls.filter((c) => c.body.recipientId === OTHER || (c.body.recipient as { id?: string } | undefined)?.id === OTHER).map((c) => c.path)).toEqual([
+      "/preferences/lookup",
+      "/recipients/delete",
+      "/events",
+    ]);
+    // Back on the deletions list, so the stray event's traces go too.
+    expect(await notificationDeletionsCollection.findOne({ userId: OTHER })).toMatchObject({ userId: OTHER });
+    expect(logs.join("\n")).toContain('"event":"digest_sent_after_deletion"');
+    expect(logs.join("\n")).not.toContain(OTHER);
+
+    vi.mocked(socle.socle.sendDigestEvent).mockRestore();
+    expect((await run(new Date("2026-11-27T12:20:00Z"))).deletions).toEqual({ done: 1, pending: 0 });
+    expect(socle.to("/recipients/delete").map((c) => c.body.recipientId)).toEqual([OTHER, OTHER]);
   });
 
   it("carries on past one person's error: their day stays open for the next run, the others are sent", async () => {
