@@ -31,13 +31,16 @@ export function parseSession(value: unknown): SessionParse {
   const dot = value.indexOf(".");
   if (dot < 1) return { ok: false, reason: "invalid" };
   if (value.slice(0, dot) !== SESSION_FORMAT) return { ok: false, reason: "format" };
-  let fields: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    fields = JSON.parse(fromBase64Url(value.slice(dot + 1))) as Record<string, unknown>;
+    parsed = JSON.parse(fromBase64Url(value.slice(dot + 1)));
   } catch {
     return { ok: false, reason: "invalid" };
   }
-  const { v, a, s, h, e, u } = fields;
+  // Only a JSON object holds the fields: null would throw below, and a number,
+  // a string or an array is no session.
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return { ok: false, reason: "invalid" };
+  const { v, a, s, h, e, u } = parsed as Record<string, unknown>;
   if (v !== 1 || typeof a !== "string" || typeof s !== "string" || typeof h !== "string" || typeof e !== "string") {
     return { ok: false, reason: "invalid" };
   }

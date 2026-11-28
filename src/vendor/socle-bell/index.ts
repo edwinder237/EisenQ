@@ -5,7 +5,7 @@
 //
 // What an app imports. No provider name appears in it.
 
-export const SOCLE_BELL_VERSION = "1.0.0";
+export const SOCLE_BELL_VERSION = "1.0.1";
 
 export { SocleBell, DEFAULT_LABELS } from "./SocleBell";
 export type {
