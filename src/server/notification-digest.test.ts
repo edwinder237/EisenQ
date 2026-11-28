@@ -439,6 +439,52 @@ describe("the daily summary, for every account", () => {
     ).toMatchObject({ scanned: 0, capped: true });
   });
 
+  it("carries on past one person's error: their day stays open for the next run, the others are sent", async () => {
+    const BAD = "user_2badBadBadBadBad0000004";
+    await overdueTask(OWNER);
+    for (const id of [BAD, OTHER]) {
+      await seedSettings(id);
+      await overdueTask(id);
+    }
+    const find = tasksCollection.find.bind(tasksCollection);
+    const spy = vi
+      .spyOn(tasksCollection, "find")
+      .mockImplementation((filter = {}, options) => {
+        if (filter.userId === BAD) throw new Error("boom");
+        return find(filter, options);
+      });
+    expect(await run()).toMatchObject({
+      status: "done",
+      scanned: 3,
+      outcomes: { sent: 2, unavailable: 1 },
+    });
+    expect((await record(BAD))?.status).toBe("pending");
+    expect(logs.join("\n")).toContain('"event":"digest_person_failed"');
+    expect(logs.join("\n")).not.toContain(BAD);
+
+    // And an error before their day is claimed: counted, and the run goes on.
+    spy.mockRestore();
+    const updateOne = userSettingsCollection.updateOne.bind(userSettingsCollection);
+    vi.spyOn(userSettingsCollection, "updateOne").mockImplementation(
+      (filter, update, options) => {
+        if (filter.userId === BAD && "notificationDigest.day" in filter)
+          throw new Error("boom");
+        return updateOne(filter, update, options);
+      },
+    );
+    expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+      status: "done",
+      outcomes: { "already-sent": 2, unavailable: 1 },
+    });
+    vi.mocked(userSettingsCollection.updateOne).mockRestore();
+    expect(await run(new Date("2026-11-27T12:35:00Z"))).toMatchObject({
+      outcomes: { "already-sent": 2, sent: 1 },
+    });
+    expect(socle.events().map((e) => e.recipient.id).sort()).toEqual(
+      [OWNER, BAD, OTHER].sort(),
+    );
+  });
+
   it("still counts a task created over MCP, for the account that created it", async () => {
     await seedSettings(OTHER);
     socle.setChoices(OTHER, { email: true });

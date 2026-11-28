@@ -9,6 +9,7 @@ import type {
 } from "~/lib/notifications/types";
 import {
   accountAddressFor,
+  errorNameOf,
   logNotifications,
   type AccountAddress,
 } from "~/server/notification-access";
@@ -262,6 +263,36 @@ async function digestFor(
       },
     );
 
+  try {
+    return await sendClaimed(ctx, socle, opts, { key, settle, done });
+  } catch (err) {
+    // One person's failure never stops the run: their day stays open, with
+    // the same key, for the next run inside their window.
+    logNotifications("error", "digest_person_failed", {
+      errorName: errorNameOf(err),
+    });
+    await settle("pending").catch(() => undefined);
+    return done("unavailable", true);
+  }
+}
+
+type Claimed = {
+  key: string;
+  settle: (
+    status: DigestRecord["status"],
+    nextKey?: string,
+  ) => Promise<unknown>;
+  done: (outcome: DigestOutcome, calledSocle?: boolean) => PersonResult;
+};
+
+/** The rest of one person's summary, once today's record is theirs. */
+async function sendClaimed(
+  ctx: NotificationContext,
+  socle: SocleClient,
+  opts: Pick<DigestRunOptions, "addressFor" | "sleep">,
+  { key, settle, done }: Claimed,
+): Promise<PersonResult> {
+  const { userId, now } = ctx;
   const counts = digestCounts(
     await currentNotifications(ctx, emailPreferences(ctx.prefs)),
     false,
@@ -426,7 +457,17 @@ export async function runDigests(
       }
       after = doc._id;
       scanned++;
-      const result = await digestFor(contextFrom(doc.userId, doc, now), socle, opts);
+      let result: PersonResult;
+      try {
+        result = await digestFor(contextFrom(doc.userId, doc, now), socle, opts);
+      } catch (err) {
+        // Before their day was claimed (reading or claiming it): nothing to
+        // settle, and the next run tries them again.
+        logNotifications("error", "digest_person_failed", {
+          errorName: errorNameOf(err),
+        });
+        result = { outcome: "unavailable", calledSocle: false };
+      }
       outcomes[result.outcome] = (outcomes[result.outcome] ?? 0) + 1;
       if (result.calledSocle) people++;
     }
