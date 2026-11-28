@@ -8,7 +8,8 @@ import { describeSource } from "~/lib/task-source";
 import { AiConnectorsPanel, DEFAULT_MCP_CONFIG, browserTimeZone, mcpConfigEqual, mcpConfigFrom, type McpConfigDraft } from "~/components/AiConnectorsPanel";
 import { DelegateQuadrant } from "~/components/DelegateQuadrant";
 import { useConfirm } from "~/components/ConfirmDialog";
-import { NotificationBell } from "~/components/NotificationBell";
+import { SocleBell } from "~/vendor/socle-bell";
+import { bellFooterText } from "~/lib/notifications/footer";
 import { NotificationsSettings, notificationPrefsEqual } from "~/components/NotificationsSettings";
 import { ReminderPicker } from "~/components/ReminderPicker";
 import { createMockNotificationsApi, getNotificationsMode, liveNotificationsApi, type NotificationsMode } from "~/lib/notifications/client";
@@ -658,6 +659,12 @@ export default function HomePage() {
   );
   const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences | null>(null);
   const [draftNotifPrefs, setDraftNotifPrefs] = useState<NotificationPreferences | null>(null);
+  // The bell's footer, read each time the panel opens, as Marc's bell did.
+  // From EisenQ's copy of the email switch: opening the bell never asks Socle.
+  const [bellFooter, setBellFooter] = useState(() => bellFooterText(null));
+  const refreshBellFooter = useCallback(() => {
+    notifApi?.getPreferences({ cached: true }).then((p) => setBellFooter(bellFooterText(p)), () => setBellFooter(bellFooterText(null)));
+  }, [notifApi]);
   const [paymentsData, setPaymentsData] = useState<PaymentsDueData | null>(null);
   const [paymentsError, setPaymentsError] = useState(false);
   // Which day the payments bar is showing. Always a local calendar date.
@@ -4124,12 +4131,17 @@ export default function HomePage() {
                 </button>
               )}
               {notifApi && (
-                <NotificationBell
-                  api={notifApi}
+                // Socle's bell (src/vendor/socle-bell, never edited here): EisenQ's
+                // reminders, plus the notices sent through Socle in live mode.
+                <SocleBell
+                  sessionUrl={notifMode === "live" ? "/api/notifications/bell-session" : null}
+                  reminders={notifApi}
                   refreshKey={notifRefreshKey}
                   onOpen={openNotificationTarget}
-                  onMarkTaskDone={(id) => { const t = tasks.find(x => x._id === id); if (t && t.status !== "completed") void handleToggleComplete(t); }}
+                  onMarkDone={(target) => { if (target.type !== "task") return; const t = tasks.find(x => x._id === target.id); if (t && t.status !== "completed") void handleToggleComplete(t); }}
                   onOpenSettings={() => openSettings("notifications")}
+                  onOpenChange={(open) => { if (open) refreshBellFooter(); }}
+                  footer={bellFooter}
                 />
               )}
               <button className="navbtn" onClick={() => setIsCalendarDrawerOpen(true)} title="Today's calendar">
