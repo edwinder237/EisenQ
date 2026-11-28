@@ -120,11 +120,16 @@ export function inSendWindow(
   return minutes >= target && minutes < target + CATCH_UP_MINUTES;
 }
 
-function retryable(r: SendResult): boolean {
+/**
+ * Worth sending again with the same key: Socle unreachable, any 5xx, a 429,
+ * or the key still in use. Socle's idempotency makes a repeat safe.
+ */
+export function retryable(r: SendResult): boolean {
   return (
     r.kind === "unreachable" ||
     (r.kind === "problem" &&
-      (r.status === 503 ||
+      (r.status >= 500 ||
+        r.status === 429 ||
         (r.status === 409 && r.type === "idempotency-key-in-use")))
   );
 }

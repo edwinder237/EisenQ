@@ -392,6 +392,30 @@ describe("the daily summary, for every account", () => {
     expect(new Set(keys).size).toBe(1);
   });
 
+  it("treats every 5xx and a 429 from Socle as worth a retry with the same key, never as a refusal", async () => {
+    for (const [i, status] of [500, 502, 504, 429].entries()) {
+      resetFakeDb();
+      await seedSettings(OWNER, { notifications: SAVED });
+      await seedDay();
+      socle.answerNext("/events", { status }, { status });
+      const day = new Date(AT_SEVEN.getTime() + i * 86_400_000);
+      expect(await run(day)).toMatchObject({ outcomes: { unavailable: 1 } });
+      expect((await record(OWNER))?.status).toBe("pending");
+      // The next run, same window: sent, under the same key.
+      expect(await run(new Date(day.getTime() + 15 * 60_000))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const keys = socle.events().slice(-3).map((e) => e.key);
+      expect(new Set(keys).size).toBe(1);
+    }
+    // A 4xx refusal is still final for the day.
+    resetFakeDb();
+    await seedSettings(OWNER, { notifications: SAVED });
+    await seedDay();
+    socle.answerNext("/events", { status: 422, body: { type: "https://socle-services.app/problems/data-invalid" } });
+    expect(await run(new Date("2026-12-05T12:05:00Z"))).toMatchObject({ outcomes: { refused: 1 } });
+  });
+
   it("retries the next run when Socle can't say what the person has on", async () => {
     await seedDay();
     socle.answerNext("/preferences/lookup", { status: 503 });
