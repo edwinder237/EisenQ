@@ -446,6 +446,26 @@ describe("the daily summary, for every account", () => {
     });
   });
 
+  it("doesn't read email off from an accepted send that went to the bell only", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    // Socle leaves email out, as it does while the type's email is paused.
+    socle.answerNext("/events", {
+      status: 202,
+      body: {
+        eventId: "8c0a4c1e-5d1b-4f2a-9a57-5b3c2f0e7d11",
+        status: "accepted",
+        channels: ["in_app"],
+      },
+    });
+    expect(await run()).toMatchObject({ outcomes: { sent: 1 } });
+    expect(socle.events()[0]!.recipient.email).toBe(OWNER_EMAIL);
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: true, bell: true });
+  });
+
   it("an unverified email gets nothing, and the skip is logged with no address", async () => {
     await seedDay();
     socle.setChoices(OWNER, { email: true });

@@ -508,11 +508,9 @@ async function sendClaimed(
     await settleSent("sent");
     if (result.eventId)
       logNotifications("info", "digest_sent", { eventId: result.eventId });
-    // An address went, but Socle sent no email: its email is off now.
-    if (recipient.email && result.channels && !result.channels.includes("email"))
-      await saveChannelsCopy(userId, { ...channels, email: false }, now).catch(
-        () => undefined,
-      );
+    // Channels without email don't mean the person's email is off: Socle
+    // also leaves it out while the event type's email is paused. Only a
+    // look-up says what they chose.
     return done("sent", true);
   }
   const problem = result.kind === "problem" ? result : null;
