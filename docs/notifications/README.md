@@ -199,7 +199,7 @@ session), `src/server/notification-digest.ts` (the daily summary),
   999. Never a task name, a date, a time or a time zone. Socle writes the text.
   - Who: every account with a settings record whose copy has email or the
     bell on, read 100 at a time. A run asks Socle about at most 50 people and
-    starts nobody new after 40 seconds; the next runs carry on.
+    starts nobody new after 30 seconds; the next runs carry on.
   - Before each send it asks Socle for the person's switches. Both off:
     nothing. Email off: the event goes with no address, to the bell only.
     Email on: only to the account's own verified primary email; without one

@@ -718,6 +718,22 @@ describe("the daily summary, for every account", () => {
       expect(new Set(events.map((e) => e.raw)).size).toBe(1);
     });
 
+    it("sends nothing when the record is gone just before the first send (account deleted)", async () => {
+      await seedDay();
+      const updateOne = userSettingsCollection.updateOne.bind(userSettingsCollection);
+      const pinSpy = vi
+        .spyOn(userSettingsCollection, "updateOne")
+        .mockImplementation(async (filter, update, options) => {
+          // Clerk's event lands just as the counts are kept.
+          if (update.$set && "notificationDigest.counts" in update.$set)
+            await clearNotificationData(OWNER, AT_SEVEN);
+          return updateOne(filter, update, options);
+        });
+      expect(await run()).toMatchObject({ outcomes: { "account-deleted": 1 } });
+      pinSpy.mockRestore();
+      expect(socle.events()).toEqual([]);
+    });
+
     it("but a new key, after Socle asked for the address, goes with fresh counts", async () => {
       await seedDay();
       // Socle's look-up still says email off; by the send, it's on.
