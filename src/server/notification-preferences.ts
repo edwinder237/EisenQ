@@ -119,6 +119,21 @@ export async function writePreferences(
         "Email and bell choices aren't set up for EisenQ yet.",
         503,
       );
+    // Consent is recorded only for an address email can actually go to
+    // (legal's A1): the account's own, verified.
+    if (changes.email === true) {
+      const address = await settingsAddressFor(userId);
+      if (!address)
+        throw new NotificationError(
+          "Couldn't check your account's email address. Try again.",
+          503,
+        );
+      if (address.kind !== "verified")
+        throw new NotificationError(
+          "Verify your account's email address first, then turn the daily email on.",
+          400,
+        );
+    }
     const answer = await socle.setPreferences(userId, changes);
     if (answer.kind !== "ok") {
       logFailure("notification_preferences_not_saved", answer);

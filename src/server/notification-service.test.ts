@@ -522,6 +522,20 @@ describe("preferences: EisenQ's own fields, and the email and bell from Socle", 
     expect(stored?.notificationChannels?.email).toBe(false);
   });
 
+  it("won't turn email on for an address Clerk hasn't verified", async () => {
+    vi.mocked(clerkClient).mockResolvedValue(
+      fakeClerk({ unverified: [OWNER] }) as never,
+    );
+    await getPrefs();
+    const res = await putPrefs({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      digest: { enabled: true, sendAt: "07:00" },
+    });
+    expect(res.status).toBe(400);
+    expect(socle.to("/preferences")).toEqual([]);
+    expect(socle.choicesOf(OWNER).email.enabled).toBe(false);
+  });
+
   it("rejects a malformed body with { error }", async () => {
     const res = await putPrefs({ digest: { sendAt: "7am" } });
     expect(res.status).toBe(400);

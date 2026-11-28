@@ -56,7 +56,7 @@ export function fakeSocle() {
 
   const fetchImpl = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input);
+      const url = input instanceof Request ? input.url : input.toString();
       const path = new URL(url).pathname.replace(/^\/v1\/notifications/, "");
       const body = (init?.body ? JSON.parse(init.body as string) : {}) as Record<
         string,

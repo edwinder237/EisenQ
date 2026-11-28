@@ -225,14 +225,15 @@ describe("the person's calls: the ID in the body, never in the address", () => {
   };
 
   function sentTo(fetchImpl: ReturnType<typeof stub>) {
-    const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(String(url)).not.toContain(ID);
+    const [input, init] = fetchImpl.mock.calls[0]!;
+    const url = input instanceof Request ? input.url : input.toString();
+    expect(url).not.toContain(ID);
     expect(new Headers(init?.headers).get("authorization")).toBe(
       "Bearer test-key",
     );
     expect(init?.redirect).toBe("error");
     return {
-      url: String(url),
+      url,
       method: init?.method,
       body: JSON.parse(init?.body as string) as unknown,
     };

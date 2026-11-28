@@ -38,7 +38,12 @@ export interface NotificationsApi {
   markAllRead(): Promise<void>;
   /** Dismiss every FYI item. Needs-you items are never bulk-cleared. */
   clearFyi(): Promise<void>;
-  getPreferences(): Promise<NotificationPreferences>;
+  /**
+   * Settings → Notifications, with the email and bell switches as Socle holds
+   * them. `cached`: EisenQ's last copy of those, without asking Socle (the
+   * bell's footer, which opens often).
+   */
+  getPreferences(opts?: { cached?: boolean }): Promise<NotificationPreferences>;
   savePreferences(prefs: NotificationPreferences): Promise<NotificationPreferences>;
   getItemReminder(kind: ItemReminder["kind"], itemId: string): Promise<ItemReminder>;
   setItemReminder(reminder: ItemReminder): Promise<ItemReminder>;
@@ -86,7 +91,7 @@ export const liveNotificationsApi: NotificationsApi = {
   act: (id, action) => call<void>(`/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(action) }),
   markAllRead: () => call<void>("", { method: "POST", body: JSON.stringify({ action: "read_all" }) }),
   clearFyi: () => call<void>("", { method: "POST", body: JSON.stringify({ action: "clear_fyi" }) }),
-  getPreferences: () => call<NotificationPreferences>("/preferences"),
+  getPreferences: (opts) => call<NotificationPreferences>(opts?.cached ? "/preferences?cached=1" : "/preferences"),
   savePreferences: (prefs) => call<NotificationPreferences>("/preferences", { method: "PUT", body: JSON.stringify(prefs) }),
   getItemReminder: (kind, itemId) =>
     call<ItemReminder>(`/reminders?kind=${kind}&itemId=${encodeURIComponent(itemId)}`),
@@ -122,6 +127,7 @@ function loadState(): MockState {
         ...s.prefs,
         events: { ...DEFAULT_NOTIFICATION_PREFERENCES.events, ...s.prefs?.events },
         digest: { ...DEFAULT_NOTIFICATION_PREFERENCES.digest, ...s.prefs?.digest },
+        bell: { ...DEFAULT_NOTIFICATION_PREFERENCES.bell, ...s.prefs?.bell },
       },
     };
   } catch {
@@ -210,7 +216,9 @@ export function createMockNotificationsApi(
     },
     async savePreferences(prefs) {
       // The address is the account email, never stored from the client.
-      commit({ ...state, prefs: { ...prefs, digest: { enabled: prefs.digest.enabled, sendAt: prefs.digest.sendAt } } });
+      const kept: NotificationPreferences = { ...prefs, digest: { enabled: prefs.digest.enabled, sendAt: prefs.digest.sendAt } };
+      delete kept.channelsUnavailable;
+      commit({ ...state, prefs: kept });
       return this.getPreferences();
     },
     async getItemReminder(kind, itemId) {
