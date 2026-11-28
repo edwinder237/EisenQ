@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 // MongoDB is an in-memory fake (src/test/fake-db.ts), Clerk and Socle are
 // stubbed, and src/test/setup.ts makes any other fetch fail.
 export default defineConfig({
+  // tsconfig keeps JSX for Next ("preserve"); tests render it with React's
+  // automatic runtime instead.
+  oxc: { jsx: { runtime: "automatic" } },
   resolve: {
     alias: {
       "~": fileURLToPath(new URL("./src", import.meta.url)),

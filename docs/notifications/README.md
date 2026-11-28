@@ -61,6 +61,7 @@ only to Socle, from its server; it never calls Socle's delivery services.
 | `src/components/NotificationBell.tsx` | Marc's bell before the swap. Kept, unused. |
 | `src/components/NotificationsSettings.tsx` | The Settings tab. |
 | `src/components/ReminderPicker.tsx` | Remind me, per maintenance item. |
+| `src/app/privacy/page.tsx`, `src/lib/privacy-notice.ts` | `/privacy`: the privacy notice for notifications, legal's text in English and French. Public. Linked from Settings → Notifications and the landing page's footer. The person in charge and their address come from `NEXT_PUBLIC_PRIVACY_OFFICER` and `NEXT_PUBLIC_PRIVACY_CONTACT` (optional; unset: "EisenQ's developer", "through your account settings"). |
 
 ## Endpoints to implement
 
@@ -221,4 +222,6 @@ session), `src/server/notification-digest.ts` (the daily summary),
 - **Variables** (all optional; without them nothing reaches Socle and builds
   still pass): `SOCLE_API_URL`, `SOCLE_API_KEY` (its key needs the scopes
   `notifications:send` and `notifications:bell`), `CRON_SECRET` and
-  `CLERK_WEBHOOK_SIGNING_SECRET`. The UI is live by default.
+  `CLERK_WEBHOOK_SIGNING_SECRET`, plus the public `NEXT_PUBLIC_PRIVACY_OFFICER`
+  and `NEXT_PUBLIC_PRIVACY_CONTACT` for `/privacy` (read at build time). The UI
+  is live by default.

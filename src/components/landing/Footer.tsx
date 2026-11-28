@@ -10,11 +10,16 @@ export function Footer() {
           <span style={serif} className="text-[18px]">EisenQ</span>
           <span className="text-[13px]" style={{ color: "#a89a80" }}>© {new Date().getFullYear()} · All rights reserved.</span>
         </div>
-        <div className="text-[13px]" style={{ color: "#a89a80" }}>
-          Created by{" "}
-          <Link href="https://lumeve.com" target="_blank" rel="noopener noreferrer" style={{ color: "#7f6a45" }} className="hover:underline">
-            Lumeve
+        <div className="text-[13px] flex items-center gap-4" style={{ color: "#a89a80" }}>
+          <Link href="/privacy" style={{ color: "#7f6a45" }} className="hover:underline">
+            Privacy
           </Link>
+          <span>
+            Created by{" "}
+            <Link href="https://lumeve.com" target="_blank" rel="noopener noreferrer" style={{ color: "#7f6a45" }} className="hover:underline">
+              Lumeve
+            </Link>
+          </span>
         </div>
       </div>
     </footer>

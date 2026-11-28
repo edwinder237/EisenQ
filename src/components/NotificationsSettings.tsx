@@ -178,6 +178,10 @@ export function NotificationsSettings({ api, draft, onChange }: {
             Couldn&apos;t load your email and bell choices just now, so they can&apos;t be changed. Try again later.
           </div>
         )}
+        <p className="text-[12px] mt-3" style={{ color: "var(--muted)" }}>
+          The daily email and bell notices are optional, and you can turn them off here at any time.{" "}
+          <a href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>Privacy notice</a>
+        </p>
       </section>
     </div>
   );

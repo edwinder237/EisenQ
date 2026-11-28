@@ -12,6 +12,8 @@ const isPublicRoute = createRouteMatcher([
   "/",
   "/sign-in(.*)",
   "/sign-up(.*)",
+  // The privacy notice: readable before signing up, and from an email.
+  "/privacy",
   "/api/contact",
   // NOT unauthenticated: the capture extension can't send the Clerk cookie, so
   // this route checks an X-Capture-Token in its own handler instead. Listing it
