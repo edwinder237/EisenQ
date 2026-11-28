@@ -249,6 +249,42 @@ describe("POST /api/webhooks/clerk, user.deleted", () => {
     ]);
   });
 
+  it("tries the longest-untried first, and carries on past one ID Socle refuses", async () => {
+    socle.answerNext("/recipients/delete", { status: 503 }, { status: 503 });
+    await post(signed(deleted(OTHER)));
+    vi.setSystemTime(new Date(NOW.getTime() + 1000));
+    await post(signed(deleted(OWNER)));
+
+    // OTHER was tried longest ago: first. Refused (422): it stays, OWNER goes.
+    socle.answerNext("/recipients/delete", {
+      status: 422,
+      body: { type: "https://socle-services.app/problems/recipient-invalid" },
+    });
+    vi.setSystemTime(new Date(NOW.getTime() + 60_000));
+    const first = await runDigests({ socle: socle.socle, now: new Date(), sleep: async () => undefined });
+    expect(first.deletions).toEqual({ done: 1, pending: 1 });
+    expect(socle.to("/recipients/delete").slice(2).map((c) => c.body.recipientId)).toEqual([OTHER, OWNER]);
+    expect(logs.join("\n")).toContain('"event":"notification_deletion_refused"');
+
+    // A third deletion, tried just now: OTHER (tried a minute ago) is still
+    // ahead of it, and a 503 on OTHER stops the run's retries there.
+    const THIRD = "user_2thirdThirdThird000006";
+    socle.answerNext("/recipients/delete", { status: 503 });
+    vi.setSystemTime(new Date(NOW.getTime() + 90_000));
+    await post(signed(deleted(THIRD)));
+    socle.answerNext("/recipients/delete", { status: 503 });
+    vi.setSystemTime(new Date(NOW.getTime() + 120_000));
+    const second = await runDigests({ socle: socle.socle, now: new Date(), sleep: async () => undefined });
+    expect(second.deletions).toEqual({ done: 0, pending: 2 });
+    expect(socle.to("/recipients/delete").slice(-1).map((c) => c.body.recipientId)).toEqual([OTHER]);
+
+    // Now THIRD is the longest untried: it goes first.
+    vi.setSystemTime(new Date(NOW.getTime() + 180_000));
+    await runDigests({ socle: socle.socle, now: new Date(), sleep: async () => undefined });
+    expect(socle.to("/recipients/delete").slice(-2).map((c) => c.body.recipientId)).toEqual([THIRD, OTHER]);
+    expect(await notificationDeletionsCollection.countDocuments({})).toBe(0);
+  });
+
   it("answers the result as JSON with nothing about the person", async () => {
     const res = await post(signed(deleted(OTHER)));
     expect(await json(res)).toEqual({ received: true });

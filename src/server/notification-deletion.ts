@@ -82,9 +82,12 @@ export async function deleteNotificationsFor(
 }
 
 /**
- * The daily job's retries, oldest first. It stops at the first one Socle
- * doesn't confirm: Socle is likely down, and the run's time is the summaries'.
- * The rest wait for the next run.
+ * The daily job's retries, the longest untried first, so an ID Socle keeps
+ * refusing moves to the back instead of blocking the others.
+ * - Socle confirms (204): done, and the ID goes.
+ * - Socle refuses this one ID (a 4xx): it stays, and the next is tried.
+ * - Socle is down or busy (a 5xx, a 429, or unreachable): it stays, and the
+ *   rest wait for the next run, whose time is the summaries'.
  */
 export async function retryPendingDeletions(
   socle: SocleClient,
@@ -96,19 +99,21 @@ export async function retryPendingDeletions(
   const left = opts.left ?? (() => Infinity);
   const waiting = await notificationDeletionsCollection
     .find({})
-    .sort({ since: 1 })
+    .sort({ lastTriedAt: 1 })
     .limit(max)
     .toArray();
   let done = 0;
   for (const { userId } of waiting) {
     if (left() < 500) break;
     const result = await socle.deleteRecipient(userId, { timeoutMs: left() });
-    if (result.kind !== "deleted") {
-      await keepPending(userId, now);
-      break;
+    if (result.kind === "deleted") {
+      await notificationDeletionsCollection.deleteMany({ userId });
+      done++;
+      continue;
     }
-    await notificationDeletionsCollection.deleteMany({ userId });
-    done++;
+    await keepPending(userId, now);
+    if (result.kind === "unreachable" || result.status >= 500 || result.status === 429) break;
+    logNotifications("warn", "notification_deletion_refused", { status: result.status });
   }
   const pending =
     waiting.length === 0
