@@ -604,7 +604,7 @@ describe("the daily summary, for every account", () => {
     await seedSettings(OTHER);
     await overdueTask(OTHER);
     const send = socle.socle.sendDigestEvent.bind(socle.socle);
-    vi.spyOn(socle.socle, "sendDigestEvent").mockImplementation(async (event, call) => {
+    const sendSpy = vi.spyOn(socle.socle, "sendDigestEvent").mockImplementation(async (event, call) => {
       // Clerk's event lands, and Socle's delete runs, just before this send reaches Socle.
       if (event.recipient.id === OTHER) await deleteNotificationsFor(OTHER, socle.socle, AT_SEVEN);
       return send(event, call);
@@ -620,7 +620,7 @@ describe("the daily summary, for every account", () => {
     expect(logs.join("\n")).toContain('"event":"digest_sent_after_deletion"');
     expect(logs.join("\n")).not.toContain(OTHER);
 
-    vi.mocked(socle.socle.sendDigestEvent).mockRestore();
+    sendSpy.mockRestore();
     expect((await run(new Date("2026-11-27T12:20:00Z"))).deletions).toEqual({ done: 1, pending: 0 });
     expect(socle.to("/recipients/delete").map((c) => c.body.recipientId)).toEqual([OTHER, OTHER]);
   });
