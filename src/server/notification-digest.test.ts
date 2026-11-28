@@ -1076,6 +1076,67 @@ describe("Send a test", () => {
     expect(socle.events()).toHaveLength(5);
   });
 
+  it("gives the day's test back when Socle is down, busy or unreachable", async () => {
+    socle.setChoices(OWNER, { email: true });
+    const tests = async () =>
+      (await userSettingsCollection.findOne({ userId: OWNER }))?.notificationTests;
+    socle.answerNext("/events", { status: 503 }, { status: 429 }, { status: 500 });
+    for (let i = 0; i < 3; i++)
+      await expect(
+        sendTestDigest(OWNER, { socle: socle.socle }),
+      ).rejects.toMatchObject({ status: 503 });
+    const send = socle.socle.sendDigestEvent.bind(socle.socle);
+    const sendSpy = vi
+      .spyOn(socle.socle, "sendDigestEvent")
+      .mockResolvedValueOnce({ kind: "unreachable", reason: "timeout" });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 503 });
+    sendSpy.mockImplementation(send);
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 0 });
+
+    // So all three are still there today.
+    for (let i = 0; i < 3; i++)
+      await expect(sendTestDigest(OWNER, { socle: socle.socle })).resolves.toEqual({
+        sentTo: OWNER_EMAIL,
+      });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 3 });
+    sendSpy.mockRestore();
+  });
+
+  it("never gives a test back below zero, and a refusal still counts", async () => {
+    socle.setChoices(OWNER, { email: true });
+    const tests = async () =>
+      (await userSettingsCollection.findOne({ userId: OWNER }))?.notificationTests;
+    // The count is reset while the test is on its way.
+    const sendSpy = vi
+      .spyOn(socle.socle, "sendDigestEvent")
+      .mockImplementationOnce(async () => {
+        await userSettingsCollection.updateOne(
+          { userId: OWNER },
+          { $set: { notificationTests: { day: "2026-11-27", count: 0 } } },
+        );
+        return { kind: "problem", status: 503, type: "unknown" };
+      });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 0 });
+    sendSpy.mockRestore();
+
+    socle.answerNext("/events", {
+      status: 422,
+      body: { type: "https://socle-services.app/problems/data-invalid" },
+    });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 502 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 1 });
+  });
+
   it("doesn't take Socle's 409 for the person's choices: the copy stays what Socle's look-up said", async () => {
     socle.setChoices(OWNER, { email: true });
     socle.answerNext("/events", {

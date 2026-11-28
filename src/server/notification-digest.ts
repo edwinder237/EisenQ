@@ -803,6 +803,18 @@ async function takeTestSlot(
   return (await sameDay()).modifiedCount === 1;
 }
 
+/** Gives back that day's test when Socle couldn't take it. Never below 0, and never another day's. */
+async function giveBackTestSlot(userId: string, day: string): Promise<void> {
+  await userSettingsCollection.updateOne(
+    {
+      userId,
+      "notificationTests.day": day,
+      "notificationTests.count": { $gt: 0 },
+    },
+    { $inc: { "notificationTests.count": -1 } },
+  );
+}
+
 /**
  * "Send a test": today's summary now, even if empty, marked as a test, to the
  * account's own verified primary email, and only while its email is on in
@@ -854,7 +866,8 @@ export async function sendTestDigest(
     throw new NotificationError("Your account has no email address.", 400);
 
   const ctx = await loadContext(userId, now);
-  if (!(await takeTestSlot(userId, ymdInZone(now, ctx.timeZone), now)))
+  const day = ymdInZone(now, ctx.timeZone);
+  if (!(await takeTestSlot(userId, day, now)))
     throw new NotificationError(
       `That's ${TEST_LIMIT} test emails today. Try again tomorrow.`,
       429,
@@ -905,10 +918,13 @@ export async function sendTestDigest(
       503,
     );
   }
-  if (retryable(result))
+  if (retryable(result)) {
+    // Socle down, busy or unreachable: an outage doesn't use up the day's tests.
+    await giveBackTestSlot(userId, day).catch(() => undefined);
     throw new NotificationError(
       "Email is unavailable right now. Try again in a few minutes.",
       503,
     );
+  }
   throw new NotificationError("Socle refused the test email.", 502);
 }

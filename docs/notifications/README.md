@@ -212,7 +212,8 @@ session), `src/server/notification-digest.ts` (the daily summary),
     exactly the same body, even if a task changed in between, so Socle
     replays it or takes it as new. A new key (when Socle asks for the
     address) starts with fresh counts. *Send a test* uses a new one each
-    time, 3 a day per person, counted in the database.
+    time, 3 a day per person, counted in the database. A test that Socle
+    couldn't take (down, busy or unreachable) is given back.
 - **A deleted account:** Clerk's `user.deleted` event, on
   `POST /api/webhooks/clerk`, signed with `CLERK_WEBHOOK_SIGNING_SECRET`.
   EisenQ deletes its own notification data for the person and leaves both
