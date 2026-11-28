@@ -231,6 +231,24 @@ describe("POST /api/webhooks/clerk, user.deleted", () => {
     expect(logs.join("\n")).not.toContain(OTHER);
   });
 
+  it("stops retrying at the first one Socle doesn't confirm, so a run's time goes to the summaries", async () => {
+    socle.answerNext("/recipients/delete", { status: 503 }, { status: 503 });
+    await post(signed(deleted(OTHER)));
+    vi.setSystemTime(new Date(NOW.getTime() + 1000));
+    await post(signed(deleted(OWNER)));
+    expect(await notificationDeletionsCollection.countDocuments({})).toBe(2);
+
+    socle.answerNext("/recipients/delete", { status: 503 });
+    const run = await runDigests({ socle: socle.socle, now: NOW, sleep: async () => undefined });
+    expect(run.deletions).toEqual({ done: 0, pending: 2 });
+    // The oldest was tried; the other waits for the next run.
+    expect(socle.to("/recipients/delete").map((c) => c.body.recipientId)).toEqual([
+      OTHER,
+      OWNER,
+      OTHER,
+    ]);
+  });
+
   it("answers the result as JSON with nothing about the person", async () => {
     const res = await post(signed(deleted(OTHER)));
     expect(await json(res)).toEqual({ received: true });

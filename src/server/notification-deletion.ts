@@ -77,7 +77,11 @@ export async function deleteNotificationsFor(
   return "pending";
 }
 
-/** The daily job's retries, oldest first. */
+/**
+ * The daily job's retries, oldest first. It stops at the first one Socle
+ * doesn't confirm: Socle is likely down, and the run's time is the summaries'.
+ * The rest wait for the next run.
+ */
 export async function retryPendingDeletions(
   socle: SocleClient,
   now = new Date(),
@@ -91,12 +95,12 @@ export async function retryPendingDeletions(
   let done = 0;
   for (const { userId } of waiting) {
     const result = await socle.deleteRecipient(userId);
-    if (result.kind === "deleted") {
-      await notificationDeletionsCollection.deleteMany({ userId });
-      done++;
-    } else {
+    if (result.kind !== "deleted") {
       await keepPending(userId, now);
+      break;
     }
+    await notificationDeletionsCollection.deleteMany({ userId });
+    done++;
   }
   const pending =
     waiting.length === 0
