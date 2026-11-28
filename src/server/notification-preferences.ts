@@ -112,6 +112,8 @@ export async function writePreferences(
     email: shown.digest.enabled,
     bell: shown.bell.enabled,
   };
+  // Clerk's answer, when this save already asked: the response shows it too.
+  let address: AccountAddress | undefined;
   if (changes.email !== undefined || changes.in_app !== undefined) {
     const which = changes.email !== undefined ? "email" : "bell";
     if (!socle)
@@ -122,7 +124,7 @@ export async function writePreferences(
     // Consent is recorded only for an address email can actually go to
     // (legal's A1): the account's own, verified.
     if (changes.email === true) {
-      const address = await settingsAddressFor(userId);
+      address = await settingsAddressFor(userId);
       if (!address)
         throw new NotificationError(
           "Couldn't check your account's email address. Try again.",
@@ -152,6 +154,6 @@ export async function writePreferences(
       ...channels,
       checkedAt: now,
     }),
-    await settingsAddressFor(userId),
+    address ?? (await settingsAddressFor(userId)),
   );
 }

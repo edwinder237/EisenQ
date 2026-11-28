@@ -208,7 +208,7 @@ export interface UserSettings {
   // The daily email's sent-today record: one per person, for their latest
   // local day. At most one digest per day. `key` is the Idempotency-Key, a
   // random UUID made when the day's record is created and reused on a retry,
-  // so Socle never sends that day twice.
+  // with the counts it first went with, so Socle never sends that day twice.
   notificationDigest?: DigestRecord;
   // "Send a test": how many today, in the person's zone (3 a day).
   notificationTests?: { day: string; count: number };
@@ -230,14 +230,25 @@ export interface NotificationChannels {
 }
 
 export interface DigestRecord {
-  day: string;          // the person's local "YYYY-MM-DD"
+  day: string;          // the person's local "YYYY-MM-DD" the send time belongs to (after midnight in a late send time's window: the day before)
   key: string;          // random UUID, sent as the Idempotency-Key
+  // The counts this key first went to Socle with, set just before that first
+  // send. Every retry with the key sends exactly these, so Socle either
+  // replays it or takes it as new, never "key reused with another body". A new
+  // key starts without them. Counts only.
+  counts?: DigestRecordCounts;
   // sending: a run holds it. pending: Socle was unavailable, the next run
   // retries with the same key. The others are final for the day: sent,
   // nothing to report (empty), email and bell both off (opted-out), email on
   // without a verified address (no-email), or refused by Socle.
   status: "sending" | "pending" | "sent" | "empty" | "refused" | "no-email" | "opted-out";
   claimedAt?: Date;
+}
+
+export interface DigestRecordCounts {
+  dueCount: number;
+  comingUpCount: number;
+  missedRoutinesCount: number;
 }
 
 // A deleted account whose deletion Socle hasn't confirmed yet (legal's

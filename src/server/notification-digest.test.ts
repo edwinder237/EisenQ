@@ -9,6 +9,7 @@ import {
   RUN_BUDGET_MS,
   RUN_DEADLINE_MS,
   runDigests,
+  sendDayFor,
   sendTestDigest,
 } from "~/server/notification-digest";
 import { createSocleClient } from "~/server/socle";
@@ -413,7 +414,8 @@ describe("the daily summary, for every account", () => {
       scanned: 0,
     });
 
-    // Socle gates too: its 409 is recorded as opted out, with nothing sent.
+    // Socle gates too: its 409 is recorded as opted out for the day, with
+    // nothing sent.
     await seedSettings(OTHER);
     await overdueTask(OTHER);
     socle.answerNext("/events", {
@@ -424,10 +426,45 @@ describe("the daily summary, for every account", () => {
       outcomes: { "opted-out": 1 },
     });
     expect((await record(OTHER))?.status).toBe("opted-out");
+  });
+
+  it("doesn't take Socle's 409 for the person's choices: the copy stays what Socle's look-up said, and they're read again", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
+      status: 409,
+      body: { type: "https://socle-services.app/problems/recipient-opted-out" },
+    });
+    expect(await run()).toMatchObject({ outcomes: { "opted-out": 1 } });
     expect(
-      (await userSettingsCollection.findOne({ userId: OTHER }))
+      (await userSettingsCollection.findOne({ userId: OWNER }))
         ?.notificationChannels,
-    ).toMatchObject({ email: false, bell: false });
+    ).toMatchObject({ email: true, bell: true });
+    // The next day they're still in the job, without opening Settings.
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({
+      scanned: 1,
+      outcomes: { sent: 1 },
+    });
+  });
+
+  it("doesn't read email off from an accepted send that went to the bell only", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    // Socle leaves email out, as it does while the type's email is paused.
+    socle.answerNext("/events", {
+      status: 202,
+      body: {
+        eventId: "8c0a4c1e-5d1b-4f2a-9a57-5b3c2f0e7d11",
+        status: "accepted",
+        channels: ["in_app"],
+      },
+    });
+    expect(await run()).toMatchObject({ outcomes: { sent: 1 } });
+    expect(socle.events()[0]!.recipient.email).toBe(OWNER_EMAIL);
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: true, bell: true });
   });
 
   it("an unverified email gets nothing, and the skip is logged with no address", async () => {
@@ -514,6 +551,116 @@ describe("the daily summary, for every account", () => {
     });
   });
 
+  describe("a late send time, whose window runs past midnight", () => {
+    const sendAt = (time: string, userId = OWNER) =>
+      userSettingsCollection.updateOne(
+        { userId },
+        { $set: { notifications: { digest: { sendAt: time } } } },
+      );
+
+    it("is retried after midnight as the day it belongs to, with the same key, and sent once", async () => {
+      await seedDay();
+      await sendAt("23:30");
+      socle.answerNext("/events", { status: 503 }, { status: 503 });
+      // 23:45 on Friday 2026-11-27 in Toronto: Socle is down.
+      expect(await run(new Date("2026-11-28T04:45:00Z"))).toMatchObject({
+        outcomes: { unavailable: 1 },
+      });
+      // 00:15 on Saturday: still Friday's.
+      expect(await run(new Date("2026-11-28T05:15:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-27", status: "sent" });
+      expect(await run(new Date("2026-11-28T05:30:00Z"))).toMatchObject({
+        outcomes: { "already-sent": 1 },
+      });
+      // 01:30: the window has closed.
+      expect(await run(new Date("2026-11-28T06:30:00Z"))).toMatchObject({
+        outcomes: { "not-due": 1 },
+      });
+      const keys = socle.events().map((e) => e.key);
+      expect(keys).toHaveLength(3);
+      expect(new Set(keys).size).toBe(1);
+
+      // 23:35 on Saturday: Saturday's, under a new key.
+      expect(await run(new Date("2026-11-29T04:35:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-28", status: "sent" });
+      expect(socle.events()[3]!.key).not.toBe(keys[0]);
+    });
+
+    it("first reached after midnight, still sends the day before's", async () => {
+      await overdueTask(OWNER);
+      await sendAt("23:30");
+      expect(await run(new Date("2026-11-28T06:00:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-27", status: "sent" });
+    });
+
+    it("never sends an earlier day's after a later day's record", async () => {
+      await overdueTask(OWNER);
+      // Saturday's went at 00:30; then the send time moved to 23:30.
+      await userSettingsCollection.updateOne(
+        { userId: OWNER },
+        {
+          $set: {
+            notifications: { digest: { sendAt: "23:30" } },
+            notificationDigest: { day: "2026-11-28", key: "00000000-0000-4000-8000-000000000001", status: "sent" },
+          },
+        },
+      );
+      // 01:00 on Saturday is inside Friday's 23:30 window.
+      expect(await run(new Date("2026-11-28T06:00:00Z"))).toMatchObject({
+        outcomes: { "already-sent": 1 },
+      });
+      expect(socle.calls).toEqual([]);
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-28" });
+    });
+
+    it("counts, after a capped run, those whose window closes after midnight before the next run", async () => {
+      const LATE = "user_2lateLateLate00009";
+      await overdueTask(OWNER);
+      await sendAt("23:30");
+      await seedSettings(LATE, { notifications: { digest: { sendAt: "23:30" } } });
+      await overdueTask(LATE);
+      // 01:20 on Saturday: Friday's window closes at 01:30.
+      expect(await run(new Date("2026-11-28T06:20:00Z"), { maxPeople: 1 })).toMatchObject({
+        outcomes: { sent: 1 },
+        capped: true,
+        windowMissed: 1,
+      });
+    });
+
+    it("sends once when Toronto's clocks go back, whether the window wraps or not", async () => {
+      // Overdue on Sunday 2026-11-01, when the clocks go from 02:00 EDT back to 01:00 EST.
+      await tasksCollection.insertOne({
+        title: "Overdue thing",
+        quadrant: "urgent-important",
+        priority: "high",
+        status: "pending",
+        userId: OWNER,
+        dueDate: new Date("2026-10-25T14:00:00Z"),
+        createdAt: new Date("2026-10-01T12:00:00Z"),
+        updatedAt: new Date("2026-10-01T12:00:00Z"),
+      });
+      await sendAt("23:30");
+      // 23:45 EDT on Saturday, then 01:15 EDT and 01:15 EST on Sunday: Saturday's.
+      expect(await run(new Date("2026-11-01T03:45:00Z"))).toMatchObject({ outcomes: { sent: 1 } });
+      expect(await run(new Date("2026-11-01T05:15:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await run(new Date("2026-11-01T06:15:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-10-31" });
+
+      // 01:30 happens twice on Sunday: sent at the first, not again at the second.
+      await sendAt("01:30");
+      expect(await run(new Date("2026-11-01T05:30:00Z"))).toMatchObject({ outcomes: { sent: 1 } });
+      expect(await run(new Date("2026-11-01T06:30:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-01" });
+      expect(socle.events()).toHaveLength(2);
+    });
+  });
+
   it("retries with the same key after Socle was unavailable", async () => {
     await seedDay();
     socle.answerNext("/events", { status: 503 }, { status: 503 });
@@ -525,6 +672,93 @@ describe("the daily summary, for every account", () => {
     const keys = socle.events().map((e) => e.key);
     expect(keys).toHaveLength(3);
     expect(new Set(keys).size).toBe(1);
+  });
+
+  describe("a retry sends the day's first body again", () => {
+    it("after Socle failed and a task changed, with the first counts, and Socle takes it as new", async () => {
+      await seedDay();
+      socle.setChoices(OWNER, { email: true });
+      socle.answerNext("/events", { status: 503 }, { status: 503 });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      // A task changes before the next run.
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const events = socle.events();
+      expect(events.map((e) => e.status)).toEqual([503, 503, 202]);
+      expect(new Set(events.map((e) => e.key)).size).toBe(1);
+      expect(new Set(events.map((e) => e.raw)).size).toBe(1);
+      expect(events[2]!.data).toMatchObject({ dueCount: 2 });
+      // Kept with the day's record: counts only.
+      expect(await record(OWNER)).toMatchObject({
+        status: "sent",
+        counts: { dueCount: 2, comingUpCount: 1, missedRoutinesCount: 0 },
+      });
+    });
+
+    it("after an answer that was lost on the way, and Socle replays it", async () => {
+      await seedDay();
+      const send = socle.socle.sendDigestEvent.bind(socle.socle);
+      // Socle accepts each one, and EisenQ never hears back.
+      const sendSpy = vi
+        .spyOn(socle.socle, "sendDigestEvent")
+        .mockImplementation(async (event, call) => {
+          await send(event, call);
+          return { kind: "unreachable", reason: "timeout" };
+        });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      sendSpy.mockRestore();
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const events = socle.events();
+      expect(events.map((e) => e.status)).toEqual([202, 202, 202]);
+      expect(new Set(events.map((e) => e.raw)).size).toBe(1);
+    });
+
+    it("sends nothing when the record is gone just before the first send (account deleted)", async () => {
+      await seedDay();
+      const updateOne = userSettingsCollection.updateOne.bind(userSettingsCollection);
+      const pinSpy = vi
+        .spyOn(userSettingsCollection, "updateOne")
+        .mockImplementation(async (filter, update, options) => {
+          // Clerk's event lands just as the counts are kept.
+          if (update.$set && "notificationDigest.counts" in update.$set)
+            await clearNotificationData(OWNER, AT_SEVEN);
+          return updateOne(filter, update, options);
+        });
+      expect(await run()).toMatchObject({ outcomes: { "account-deleted": 1 } });
+      pinSpy.mockRestore();
+      expect(socle.events()).toEqual([]);
+    });
+
+    it("but a new key, after Socle asked for the address, goes with fresh counts", async () => {
+      await seedDay();
+      // Socle's look-up still says email off; by the send, it's on.
+      socle.setChoices(OWNER, { email: true });
+      const off = { enabled: false, changedAt: null, changedVia: null };
+      const on = { enabled: true, changedAt: null, changedVia: null };
+      socle.answerNext("/preferences/lookup", {
+        status: 200,
+        body: { channels: { email: off, in_app: on } },
+      });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      expect((await record(OWNER))?.counts).toBeUndefined();
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const [first, second] = socle.events();
+      expect(first!.status).toBe(422);
+      expect(second!.key).not.toBe(first!.key);
+      expect(second).toMatchObject({
+        status: 202,
+        recipient: { email: OWNER_EMAIL },
+        data: { dueCount: 3 },
+      });
+    });
   });
 
   it("treats every 5xx and a 429 from Socle as worth a retry with the same key, never as a refusal", async () => {
@@ -644,6 +878,21 @@ describe("the daily summary, for every account", () => {
     const early = await run(new Date("2026-11-28T12:05:00Z"), { maxPeople: 1 });
     expect(early).toMatchObject({ capped: true, windowMissed: 0 });
     expect(logs.join("\n")).not.toContain("digest_window_missed");
+  });
+
+  it("counts one whose retry is waiting with its counts, even with nothing left to report", async () => {
+    const WAITING = "user_2waitWaitWait00004";
+    await overdueTask(OWNER);
+    await seedSettings(WAITING, {
+      notificationDigest: {
+        day: "2026-11-27",
+        key: "00000000-0000-4000-8000-000000000000",
+        status: "pending",
+        counts: { dueCount: 1, comingUpCount: 0, missedRoutinesCount: 0 },
+      },
+    });
+    const late = await run(new Date("2026-11-27T13:50:00Z"), { maxPeople: 1 });
+    expect(late).toMatchObject({ outcomes: { sent: 1 }, capped: true, windowMissed: 1 });
   });
 
   it("an account deleted while its event is on the way gets Socle's delete again, after the event", async () => {
@@ -875,6 +1124,53 @@ describe("the daily summary, for every account", () => {
   });
 });
 
+describe("the send window, on the person's clock", () => {
+  const TORONTO = "America/Toronto";
+  const dayAt = (sendAt: string, iso: string) =>
+    sendDayFor(sendAt, new Date(iso), TORONTO);
+
+  it("runs two hours from the send time, past midnight too, as the day the send time belongs to", () => {
+    // 23:30 on Friday 2026-11-27 (EST): open until 01:30 on Saturday.
+    expect(dayAt("23:30", "2026-11-28T04:29:00Z")).toBeNull(); // 23:29
+    expect(dayAt("23:30", "2026-11-28T04:30:00Z")).toBe("2026-11-27");
+    expect(dayAt("23:30", "2026-11-28T05:00:00Z")).toBe("2026-11-27"); // midnight
+    expect(dayAt("23:30", "2026-11-28T06:29:00Z")).toBe("2026-11-27"); // 01:29
+    expect(dayAt("23:30", "2026-11-28T06:30:00Z")).toBeNull(); // 01:30
+    // 22:30 ends at 00:30; 00:30 is its own day's.
+    expect(dayAt("22:30", "2026-11-28T05:29:00Z")).toBe("2026-11-27");
+    expect(dayAt("22:30", "2026-11-28T05:30:00Z")).toBeNull();
+    expect(dayAt("00:30", "2026-11-28T05:15:00Z")).toBeNull(); // 00:15
+    expect(dayAt("00:30", "2026-11-28T05:30:00Z")).toBe("2026-11-28");
+    // Across a year's end.
+    expect(dayAt("23:00", "2027-01-01T05:30:00Z")).toBe("2026-12-31");
+    expect(dayAt("07:00", "2026-11-27T12:05:00Z")).toBe("2026-11-27");
+  });
+
+  it("goes by the wall clock across Toronto's DST changes", () => {
+    // Spring forward, Sunday 2026-03-08: 02:00 EST becomes 03:00 EDT.
+    expect(dayAt("23:30", "2026-03-08T05:15:00Z")).toBe("2026-03-07"); // 00:15 EST
+    // 01:30 is open from 01:30 EST to 03:30 EDT: one real hour.
+    expect(dayAt("01:30", "2026-03-08T06:30:00Z")).toBe("2026-03-08"); // 01:30 EST
+    expect(dayAt("01:30", "2026-03-08T07:15:00Z")).toBe("2026-03-08"); // 03:15 EDT
+    expect(dayAt("01:30", "2026-03-08T07:30:00Z")).toBeNull(); // 03:30 EDT
+    // 02:30 never shows on the clock: it opens at 03:00 EDT, never as the day before's.
+    expect(dayAt("02:30", "2026-03-08T06:45:00Z")).toBeNull(); // 01:45 EST
+    expect(dayAt("02:30", "2026-03-08T07:00:00Z")).toBe("2026-03-08"); // 03:00 EDT
+    expect(dayAt("02:30", "2026-03-08T08:29:00Z")).toBe("2026-03-08"); // 04:29 EDT
+    expect(dayAt("02:30", "2026-03-08T08:30:00Z")).toBeNull(); // 04:30 EDT
+
+    // Fall back, Sunday 2026-11-01: 02:00 EDT becomes 01:00 EST.
+    expect(dayAt("23:30", "2026-11-01T03:45:00Z")).toBe("2026-10-31"); // 23:45 EDT
+    expect(dayAt("23:30", "2026-11-01T05:15:00Z")).toBe("2026-10-31"); // 01:15 EDT
+    expect(dayAt("23:30", "2026-11-01T06:15:00Z")).toBe("2026-10-31"); // 01:15 EST
+    expect(dayAt("23:30", "2026-11-01T06:30:00Z")).toBeNull(); // 01:30 EST
+    // 01:30 comes twice; between the two, 01:00 to 01:29 EST is outside it.
+    expect(dayAt("01:30", "2026-11-01T05:30:00Z")).toBe("2026-11-01"); // 01:30 EDT
+    expect(dayAt("01:30", "2026-11-01T06:15:00Z")).toBeNull(); // 01:15 EST
+    expect(dayAt("01:30", "2026-11-01T06:30:00Z")).toBe("2026-11-01"); // 01:30 EST
+  });
+});
+
 describe("Send a test", () => {
   it("any account with email on, to its own verified email, even on an empty day, marked as a test", async () => {
     await seedSettings(OTHER);
@@ -952,6 +1248,85 @@ describe("Send a test", () => {
       }),
     ).resolves.toEqual({ sentTo: OWNER_EMAIL });
     expect(socle.events()).toHaveLength(5);
+  });
+
+  it("gives the day's test back when Socle is down, busy or unreachable", async () => {
+    socle.setChoices(OWNER, { email: true });
+    const tests = async () =>
+      (await userSettingsCollection.findOne({ userId: OWNER }))?.notificationTests;
+    socle.answerNext("/events", { status: 503 }, { status: 429 }, { status: 500 });
+    for (let i = 0; i < 3; i++)
+      await expect(
+        sendTestDigest(OWNER, { socle: socle.socle }),
+      ).rejects.toMatchObject({ status: 503 });
+    const send = socle.socle.sendDigestEvent.bind(socle.socle);
+    const sendSpy = vi
+      .spyOn(socle.socle, "sendDigestEvent")
+      .mockResolvedValueOnce({ kind: "unreachable", reason: "timeout" });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 503 });
+    sendSpy.mockImplementation(send);
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 0 });
+
+    // So all three are still there today.
+    for (let i = 0; i < 3; i++)
+      await expect(sendTestDigest(OWNER, { socle: socle.socle })).resolves.toEqual({
+        sentTo: OWNER_EMAIL,
+      });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 429 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 3 });
+    sendSpy.mockRestore();
+  });
+
+  it("never gives a test back below zero, and a refusal still counts", async () => {
+    socle.setChoices(OWNER, { email: true });
+    const tests = async () =>
+      (await userSettingsCollection.findOne({ userId: OWNER }))?.notificationTests;
+    // The count is reset while the test is on its way.
+    const sendSpy = vi
+      .spyOn(socle.socle, "sendDigestEvent")
+      .mockImplementationOnce(async () => {
+        await userSettingsCollection.updateOne(
+          { userId: OWNER },
+          { $set: { notificationTests: { day: "2026-11-27", count: 0 } } },
+        );
+        return { kind: "problem", status: 503, type: "unknown" };
+      });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 503 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 0 });
+    sendSpy.mockRestore();
+
+    socle.answerNext("/events", {
+      status: 422,
+      body: { type: "https://socle-services.app/problems/data-invalid" },
+    });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 502 });
+    expect(await tests()).toEqual({ day: "2026-11-27", count: 1 });
+  });
+
+  it("doesn't take Socle's 409 for the person's choices: the copy stays what Socle's look-up said", async () => {
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
+      status: 409,
+      body: { type: "https://socle-services.app/problems/recipient-opted-out" },
+    });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Your daily email is off, so nothing was sent.",
+    });
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: true, bell: true });
   });
 
   it("explains event-type-unknown", async () => {

@@ -199,7 +199,7 @@ session), `src/server/notification-digest.ts` (the daily summary),
   999. Never a task name, a date, a time or a time zone. Socle writes the text.
   - Who: every account with a settings record whose copy has email or the
     bell on, read 100 at a time. A run asks Socle about at most 50 people and
-    starts nobody new after 40 seconds; the next runs carry on.
+    starts nobody new after 30 seconds; the next runs carry on.
   - Before each send it asks Socle for the person's switches. Both off:
     nothing. Email off: the event goes with no address, to the bell only.
     Email on: only to the account's own verified primary email; without one
@@ -207,9 +207,16 @@ session), `src/server/notification-digest.ts` (the daily summary),
     (409 `recipient-opted-out`).
   - When: from `digest.sendAt` local, retried for two hours if Socle is down,
     at most once per local day. Skipped when empty, without asking Socle.
+    The two hours follow the wall clock and run past midnight: a 23:30
+    send time is retried until 01:30, still as the day before's. An earlier
+    day's summary never goes after a later day's.
   - The Idempotency-Key is a random UUID kept in the sent-today record and
-    reused on a retry. *Send a test* uses a new one each time, 3 a day per
-    person, counted in the database.
+    reused on a retry, with the counts it first went with: a retry sends
+    exactly the same body, even if a task changed in between, so Socle
+    replays it or takes it as new. A new key (when Socle asks for the
+    address) starts with fresh counts. *Send a test* uses a new one each
+    time, 3 a day per person, counted in the database. A test that Socle
+    couldn't take (down, busy or unreachable) is given back.
 - **A deleted account:** Clerk's `user.deleted` event, on
   `POST /api/webhooks/clerk`, signed with `CLERK_WEBHOOK_SIGNING_SECRET`.
   EisenQ deletes its own notification data for the person and leaves both

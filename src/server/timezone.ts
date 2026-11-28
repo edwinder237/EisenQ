@@ -42,6 +42,21 @@ export function ymdInZone(date: Date, tz: string): string {
   return `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`;
 }
 
+/** The clock in `tz` at an instant: its "YYYY-MM-DD", and the minutes since that day's midnight on the wall clock. */
+export function wallClockInZone(date: Date, tz: string): { ymd: string; minutes: number } {
+  const p = partsInZone(date.getTime(), tz);
+  return {
+    ymd: `${p.y}-${String(p.m).padStart(2, "0")}-${String(p.d).padStart(2, "0")}`,
+    minutes: (p.h % 24) * 60 + p.mi,
+  };
+}
+
+/** The calendar day before "YYYY-MM-DD". Calendar arithmetic only, so no zone or DST change moves it. */
+export function dayBefore(ymd: string): string {
+  const [y = 1970, m = 1, d = 1] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
+
 /**
  * The UTC instant at which the clocks in `tz` read `ymd hour:minute`.
  * Re-checks the offset once at the result, so a date across a DST change lands
