@@ -491,6 +491,32 @@ describe("preferences: EisenQ's own fields, and the email and bell from Socle", 
     });
   });
 
+  it("asks Clerk for the address once when turning email on", async () => {
+    await getPrefs();
+    const clerk = fakeClerk();
+    vi.mocked(clerkClient).mockResolvedValue(clerk as never);
+    const res = await putPrefs({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      digest: { enabled: true, sendAt: "07:00" },
+    });
+    expect(res.status).toBe(200);
+    expect((await json<NotificationPreferences>(res)).digest).toEqual({
+      enabled: true,
+      sendAt: "07:00",
+      address: OWNER_EMAIL,
+    });
+    expect(clerk.users.getUser).toHaveBeenCalledTimes(1);
+
+    // Any other save still asks once, for the address it shows.
+    clerk.users.getUser.mockClear();
+    await putPrefs({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      digest: { enabled: true, sendAt: "08:00" },
+      bell: { enabled: false },
+    });
+    expect(clerk.users.getUser).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves Socle alone when neither switch changed", async () => {
     await getPrefs();
     const before = socle.calls.length;
