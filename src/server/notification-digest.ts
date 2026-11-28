@@ -66,6 +66,11 @@ export const RUN_DEADLINE_MS = 50_000;
 export const DELETIONS_BUDGET_MS = 10_000;
 const CLERK_TIMEOUT_MS = 5_000;
 const MIN_CALL_MS = 500;
+// vercel.json runs the job every 15 minutes. When a run stops at its cap, it
+// counts who it didn't reach whose window closes before the next one
+// (digest_window_missed), reading at most 10 more pages.
+const RUN_EVERY_MS = 15 * 60_000;
+const MISSED_SCAN_PAGES = 10;
 const FINAL: ReadonlySet<DigestRecord["status"]> = new Set([
   "sent",
   "empty",
@@ -175,6 +180,8 @@ export interface DigestRunSummary {
   capped?: boolean;
   /** Deleted accounts Socle confirmed this run, and those still waiting. */
   deletions?: { done: number; pending: number };
+  /** When capped: people not reached whose window closes before the next run, so who get nothing today. */
+  windowMissed?: number;
 }
 
 export interface DigestRunOptions {
@@ -504,16 +511,9 @@ export async function runDigests(
   pages: for (;;) {
     const page = await userSettingsCollection
       .find(
-        {
-          ...(after ? { _id: { $gt: after } } : {}),
-          notificationsDeletedAt: { $exists: false },
-          // Email on, or the bell not switched off (no copy: Socle's defaults,
-          // so the bell is on).
-          $or: [
-            { "notificationChannels.email": true },
-            { "notificationChannels.bell": { $ne: false } },
-          ],
-        },
+        // Not deleted, and email on or the bell not switched off (no copy:
+        // Socle's defaults, so the bell is on).
+        { ...(after ? { _id: { $gt: after } } : {}), ...POPULATION },
         { projection: CONTEXT_PROJECTION },
       )
       .sort({ _id: 1 })
@@ -542,7 +542,64 @@ export async function runDigests(
     }
     if (page.length < pageSize) break;
   }
-  return finish({ status: "done", scanned, outcomes, capped, deletions });
+  const windowMissed = capped
+    ? await countClosingWindows(after, now, pageSize, left)
+    : 0;
+  if (windowMissed > 0)
+    logNotifications("warn", "digest_window_missed", { count: windowMissed });
+  return finish({
+    status: "done",
+    scanned,
+    outcomes,
+    capped,
+    deletions,
+    ...(capped ? { windowMissed } : {}),
+  });
+}
+
+const POPULATION = {
+  notificationsDeletedAt: { $exists: false },
+  $or: [
+    { "notificationChannels.email": true },
+    { "notificationChannels.bell": { $ne: false } },
+  ],
+};
+
+/**
+ * After a capped run, from where it stopped: people whose window is open now
+ * and closed by the next run, with today not done. Database reads only, and
+ * only while the run has time left. A count: never who.
+ */
+async function countClosingWindows(
+  after: ObjectId | undefined,
+  now: Date,
+  pageSize: number,
+  left: () => number,
+): Promise<number> {
+  const next = new Date(now.getTime() + RUN_EVERY_MS);
+  let missed = 0;
+  let cursor = after;
+  for (let pages = 0; pages < MISSED_SCAN_PAGES && left() >= 2_000; pages++) {
+    const page = await userSettingsCollection
+      .find(
+        { ...(cursor ? { _id: { $gt: cursor } } : {}), ...POPULATION },
+        { projection: CONTEXT_PROJECTION },
+      )
+      .sort({ _id: 1 })
+      .limit(pageSize)
+      .toArray();
+    for (const doc of page) {
+      cursor = doc._id;
+      const ctx = contextFrom(doc.userId, doc, now);
+      const { sendAt } = ctx.prefs.digest;
+      if (!inSendWindow(sendAt, now, ctx.timeZone) || inSendWindow(sendAt, next, ctx.timeZone)) continue;
+      const today = ymdInZone(now, ctx.timeZone);
+      if (ctx.digest?.day === today && FINAL.has(ctx.digest.status)) continue;
+      missed++;
+    }
+    if (page.length < pageSize) break;
+  }
+  return missed;
 }
 
 // ------------------------------------------------------------- test email ---
