@@ -527,6 +527,77 @@ describe("the daily summary, for every account", () => {
     expect(new Set(keys).size).toBe(1);
   });
 
+  describe("a retry sends the day's first body again", () => {
+    it("after Socle failed and a task changed, with the first counts, and Socle takes it as new", async () => {
+      await seedDay();
+      socle.setChoices(OWNER, { email: true });
+      socle.answerNext("/events", { status: 503 }, { status: 503 });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      // A task changes before the next run.
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const events = socle.events();
+      expect(events.map((e) => e.status)).toEqual([503, 503, 202]);
+      expect(new Set(events.map((e) => e.key)).size).toBe(1);
+      expect(new Set(events.map((e) => e.raw)).size).toBe(1);
+      expect(events[2]!.data).toMatchObject({ dueCount: 2 });
+      // Kept with the day's record: counts only.
+      expect(await record(OWNER)).toMatchObject({
+        status: "sent",
+        counts: { dueCount: 2, comingUpCount: 1, missedRoutinesCount: 0 },
+      });
+    });
+
+    it("after an answer that was lost on the way, and Socle replays it", async () => {
+      await seedDay();
+      const send = socle.socle.sendDigestEvent.bind(socle.socle);
+      // Socle accepts each one, and EisenQ never hears back.
+      const sendSpy = vi
+        .spyOn(socle.socle, "sendDigestEvent")
+        .mockImplementation(async (event, call) => {
+          await send(event, call);
+          return { kind: "unreachable", reason: "timeout" };
+        });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      sendSpy.mockRestore();
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const events = socle.events();
+      expect(events.map((e) => e.status)).toEqual([202, 202, 202]);
+      expect(new Set(events.map((e) => e.raw)).size).toBe(1);
+    });
+
+    it("but a new key, after Socle asked for the address, goes with fresh counts", async () => {
+      await seedDay();
+      // Socle's look-up still says email off; by the send, it's on.
+      socle.setChoices(OWNER, { email: true });
+      const off = { enabled: false, changedAt: null, changedVia: null };
+      const on = { enabled: true, changedAt: null, changedVia: null };
+      socle.answerNext("/preferences/lookup", {
+        status: 200,
+        body: { channels: { email: off, in_app: on } },
+      });
+      expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+      expect((await record(OWNER))?.counts).toBeUndefined();
+      await overdueTask(OWNER, "Something new");
+      expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      const [first, second] = socle.events();
+      expect(first!.status).toBe(422);
+      expect(second!.key).not.toBe(first!.key);
+      expect(second).toMatchObject({
+        status: 202,
+        recipient: { email: OWNER_EMAIL },
+        data: { dueCount: 3 },
+      });
+    });
+  });
+
   it("treats every 5xx and a 429 from Socle as worth a retry with the same key, never as a refusal", async () => {
     for (const [i, status] of [500, 502, 504, 429].entries()) {
       resetFakeDb();
@@ -644,6 +715,21 @@ describe("the daily summary, for every account", () => {
     const early = await run(new Date("2026-11-28T12:05:00Z"), { maxPeople: 1 });
     expect(early).toMatchObject({ capped: true, windowMissed: 0 });
     expect(logs.join("\n")).not.toContain("digest_window_missed");
+  });
+
+  it("counts one whose retry is waiting with its counts, even with nothing left to report", async () => {
+    const WAITING = "user_2waitWaitWait00004";
+    await overdueTask(OWNER);
+    await seedSettings(WAITING, {
+      notificationDigest: {
+        day: "2026-11-27",
+        key: "00000000-0000-4000-8000-000000000000",
+        status: "pending",
+        counts: { dueCount: 1, comingUpCount: 0, missedRoutinesCount: 0 },
+      },
+    });
+    const late = await run(new Date("2026-11-27T13:50:00Z"), { maxPeople: 1 });
+    expect(late).toMatchObject({ outcomes: { sent: 1 }, capped: true, windowMissed: 1 });
   });
 
   it("an account deleted while its event is on the way gets Socle's delete again, after the event", async () => {

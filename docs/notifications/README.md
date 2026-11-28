@@ -208,8 +208,11 @@ session), `src/server/notification-digest.ts` (the daily summary),
   - When: from `digest.sendAt` local, retried for two hours if Socle is down,
     at most once per local day. Skipped when empty, without asking Socle.
   - The Idempotency-Key is a random UUID kept in the sent-today record and
-    reused on a retry. *Send a test* uses a new one each time, 3 a day per
-    person, counted in the database.
+    reused on a retry, with the counts it first went with: a retry sends
+    exactly the same body, even if a task changed in between, so Socle
+    replays it or takes it as new. A new key (when Socle asks for the
+    address) starts with fresh counts. *Send a test* uses a new one each
+    time, 3 a day per person, counted in the database.
 - **A deleted account:** Clerk's `user.deleted` event, on
   `POST /api/webhooks/clerk`, signed with `CLERK_WEBHOOK_SIGNING_SECRET`.
   EisenQ deletes its own notification data for the person and leaves both

@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { ObjectId } from "mongodb";
 import { userSettingsCollection } from "~/server/db";
-import type { DigestRecord } from "~/server/db/schema";
+import type { DigestRecord, DigestRecordCounts } from "~/server/db/schema";
 import type {
   AppNotification,
   NotificationPreferences,
@@ -234,17 +234,20 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]).finally(() => clearTimeout(timer));
 }
 
+/** Today's record, once this run holds it: its key, and the counts that key first went with, if it went. */
+type Claim = { key: string; counts?: DigestRecordCounts };
+
 /**
  * Takes today's sent-today record for this run: a new one with a new random
- * key, or today's unfinished one with its own key. null when it's already
- * done, or another run holds it.
+ * key, or today's unfinished one with its own key and counts. null when it's
+ * already done, or another run holds it.
  */
 async function claimToday(
   userId: string,
   record: DigestRecord | undefined,
   today: string,
   now: Date,
-): Promise<string | null> {
+): Promise<Claim | null> {
   if (record?.day !== today) {
     const key = randomUUID();
     const r = await userSettingsCollection.updateOne(
@@ -260,7 +263,7 @@ async function claimToday(
         },
       },
     );
-    return r.modifiedCount === 1 ? key : null;
+    return r.modifiedCount === 1 ? { key } : null;
   }
   const r = await userSettingsCollection.updateOne(
     {
@@ -284,7 +287,18 @@ async function claimToday(
       },
     },
   );
-  return r.modifiedCount === 1 ? record.key : null;
+  if (r.modifiedCount !== 1) return null;
+  // The counts as the record holds them now, not as this run's page read
+  // them: a run in between may have sent with this key.
+  const held = (
+    await userSettingsCollection.findOne(
+      { userId },
+      { projection: { notificationDigest: 1 } },
+    )
+  )?.notificationDigest;
+  return held?.day === today && held.key === record.key && held.counts
+    ? { key: record.key, counts: held.counts }
+    : { key: record.key };
 }
 
 type PersonResult = { outcome: DigestOutcome; calledSocle: boolean };
@@ -306,26 +320,41 @@ async function digestFor(
   if (ctx.digest?.day === today && FINAL.has(ctx.digest.status))
     return done("already-sent");
 
-  const key = await claimToday(userId, ctx.digest, today, now);
-  if (!key) return done("in-progress");
+  const claim = await claimToday(userId, ctx.digest, today, now);
+  if (!claim) return done("in-progress");
+  const { key } = claim;
+  const ours = {
+    userId,
+    "notificationDigest.day": today,
+    "notificationDigest.key": key,
+  };
   const settle = (status: DigestRecord["status"], nextKey?: string) =>
-    userSettingsCollection.updateOne(
-      {
-        userId,
-        "notificationDigest.day": today,
-        "notificationDigest.key": key,
+    userSettingsCollection.updateOne(ours, {
+      $set: {
+        "notificationDigest.status": status,
+        ...(nextKey ? { "notificationDigest.key": nextKey } : {}),
       },
-      {
-        $set: {
-          "notificationDigest.status": status,
-          ...(nextKey ? { "notificationDigest.key": nextKey } : {}),
-        },
-        $unset: { "notificationDigest.claimedAt": "" },
+      // A new key starts with fresh counts.
+      $unset: {
+        "notificationDigest.claimedAt": "",
+        ...(nextKey ? { "notificationDigest.counts": "" } : {}),
       },
-    );
+    });
+  const pin = async (counts: DigestRecordCounts) =>
+    (
+      await userSettingsCollection.updateOne(ours, {
+        $set: { "notificationDigest.counts": counts },
+      })
+    ).matchedCount === 1;
 
   try {
-    return await sendClaimed(ctx, socle, opts, { key, settle, done });
+    return await sendClaimed(ctx, socle, opts, {
+      key,
+      ...(claim.counts ? { pinned: claim.counts } : {}),
+      pin,
+      settle,
+      done,
+    });
   } catch (err) {
     // One person's failure never stops the run: their day stays open, with
     // the same key, for the next run inside their window.
@@ -339,6 +368,10 @@ async function digestFor(
 
 type Claimed = {
   key: string;
+  /** The counts this key already went to Socle with: sent again exactly. */
+  pinned?: DigestRecordCounts;
+  /** Keeps the counts with the key, before its first send. False when the record is gone. */
+  pin: (counts: DigestRecordCounts) => Promise<boolean>;
   settle: (
     status: DigestRecord["status"],
     nextKey?: string,
@@ -351,7 +384,7 @@ async function sendClaimed(
   ctx: NotificationContext,
   socle: SocleClient,
   opts: PersonOptions,
-  { key, settle, done }: Claimed,
+  { key, pinned, pin, settle, done }: Claimed,
 ): Promise<PersonResult> {
   const { userId, now } = ctx;
   // Out of run time before a call: the day stays open, same key, for the next run.
@@ -360,10 +393,15 @@ async function sendClaimed(
     await settle("pending");
     return done("unavailable", calledSocle);
   };
-  const counts = digestCounts(
-    await currentNotifications(ctx, emailPreferences(ctx.prefs)),
-    false,
-  );
+  // A key that already went to Socle goes again with the same counts, even
+  // if a task changed since: Socle keeps the first body's hash, even after a
+  // failure, and would answer any other body "key reused".
+  const counts: DigestCounts = pinned
+    ? { ...pinned, isTest: false }
+    : digestCounts(
+        await currentNotifications(ctx, emailPreferences(ctx.prefs)),
+        false,
+      );
   // Nothing in it: nothing today, and Socle isn't asked.
   if (isEmpty(counts)) {
     await settle("empty");
@@ -436,6 +474,14 @@ async function sendClaimed(
 
   const event = { idempotencyKey: key, recipient, counts };
   if (opts.left() < MIN_CALL_MS) return outOfTime(true);
+  // The key's first send: its counts are kept with it first, for every retry
+  // today. If the record is gone, the account was deleted meanwhile (Clerk's
+  // event): nothing goes.
+  if (!pinned) {
+    const { dueCount, comingUpCount, missedRoutinesCount } = counts;
+    if (!(await pin({ dueCount, comingUpCount, missedRoutinesCount })))
+      return done("account-deleted", true);
+  }
   // Once the event may have reached Socle: if the record is gone because the
   // account was deleted meanwhile (Clerk's event), Socle's delete ran before
   // this event, so the ID goes back on the deletions list to run it again.
@@ -707,6 +753,11 @@ async function countClosingWindows(
       if (!inSendWindow(sendAt, now, ctx.timeZone) || inSendWindow(sendAt, next, ctx.timeZone)) continue;
       const today = ymdInZone(now, ctx.timeZone);
       if (ctx.digest?.day === today && FINAL.has(ctx.digest.status)) continue;
+      // A key that already went keeps its counts, never empty: a retry sends those.
+      if (ctx.digest?.day === today && ctx.digest.counts) {
+        missed++;
+        continue;
+      }
       if (!enoughTime()) return { count: missed, complete: false };
       // Only those who had something to report miss anything.
       const counts = digestCounts(
