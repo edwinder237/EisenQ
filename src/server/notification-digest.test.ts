@@ -9,6 +9,7 @@ import {
   RUN_BUDGET_MS,
   RUN_DEADLINE_MS,
   runDigests,
+  sendDayFor,
   sendTestDigest,
 } from "~/server/notification-digest";
 import { createSocleClient } from "~/server/socle";
@@ -550,6 +551,116 @@ describe("the daily summary, for every account", () => {
     });
   });
 
+  describe("a late send time, whose window runs past midnight", () => {
+    const sendAt = (time: string, userId = OWNER) =>
+      userSettingsCollection.updateOne(
+        { userId },
+        { $set: { notifications: { digest: { sendAt: time } } } },
+      );
+
+    it("is retried after midnight as the day it belongs to, with the same key, and sent once", async () => {
+      await seedDay();
+      await sendAt("23:30");
+      socle.answerNext("/events", { status: 503 }, { status: 503 });
+      // 23:45 on Friday 2026-11-27 in Toronto: Socle is down.
+      expect(await run(new Date("2026-11-28T04:45:00Z"))).toMatchObject({
+        outcomes: { unavailable: 1 },
+      });
+      // 00:15 on Saturday: still Friday's.
+      expect(await run(new Date("2026-11-28T05:15:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-27", status: "sent" });
+      expect(await run(new Date("2026-11-28T05:30:00Z"))).toMatchObject({
+        outcomes: { "already-sent": 1 },
+      });
+      // 01:30: the window has closed.
+      expect(await run(new Date("2026-11-28T06:30:00Z"))).toMatchObject({
+        outcomes: { "not-due": 1 },
+      });
+      const keys = socle.events().map((e) => e.key);
+      expect(keys).toHaveLength(3);
+      expect(new Set(keys).size).toBe(1);
+
+      // 23:35 on Saturday: Saturday's, under a new key.
+      expect(await run(new Date("2026-11-29T04:35:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-28", status: "sent" });
+      expect(socle.events()[3]!.key).not.toBe(keys[0]);
+    });
+
+    it("first reached after midnight, still sends the day before's", async () => {
+      await overdueTask(OWNER);
+      await sendAt("23:30");
+      expect(await run(new Date("2026-11-28T06:00:00Z"))).toMatchObject({
+        outcomes: { sent: 1 },
+      });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-27", status: "sent" });
+    });
+
+    it("never sends an earlier day's after a later day's record", async () => {
+      await overdueTask(OWNER);
+      // Saturday's went at 00:30; then the send time moved to 23:30.
+      await userSettingsCollection.updateOne(
+        { userId: OWNER },
+        {
+          $set: {
+            notifications: { digest: { sendAt: "23:30" } },
+            notificationDigest: { day: "2026-11-28", key: "00000000-0000-4000-8000-000000000001", status: "sent" },
+          },
+        },
+      );
+      // 01:00 on Saturday is inside Friday's 23:30 window.
+      expect(await run(new Date("2026-11-28T06:00:00Z"))).toMatchObject({
+        outcomes: { "already-sent": 1 },
+      });
+      expect(socle.calls).toEqual([]);
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-28" });
+    });
+
+    it("counts, after a capped run, those whose window closes after midnight before the next run", async () => {
+      const LATE = "user_2lateLateLate00009";
+      await overdueTask(OWNER);
+      await sendAt("23:30");
+      await seedSettings(LATE, { notifications: { digest: { sendAt: "23:30" } } });
+      await overdueTask(LATE);
+      // 01:20 on Saturday: Friday's window closes at 01:30.
+      expect(await run(new Date("2026-11-28T06:20:00Z"), { maxPeople: 1 })).toMatchObject({
+        outcomes: { sent: 1 },
+        capped: true,
+        windowMissed: 1,
+      });
+    });
+
+    it("sends once when Toronto's clocks go back, whether the window wraps or not", async () => {
+      // Overdue on Sunday 2026-11-01, when the clocks go from 02:00 EDT back to 01:00 EST.
+      await tasksCollection.insertOne({
+        title: "Overdue thing",
+        quadrant: "urgent-important",
+        priority: "high",
+        status: "pending",
+        userId: OWNER,
+        dueDate: new Date("2026-10-25T14:00:00Z"),
+        createdAt: new Date("2026-10-01T12:00:00Z"),
+        updatedAt: new Date("2026-10-01T12:00:00Z"),
+      });
+      await sendAt("23:30");
+      // 23:45 EDT on Saturday, then 01:15 EDT and 01:15 EST on Sunday: Saturday's.
+      expect(await run(new Date("2026-11-01T03:45:00Z"))).toMatchObject({ outcomes: { sent: 1 } });
+      expect(await run(new Date("2026-11-01T05:15:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await run(new Date("2026-11-01T06:15:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-10-31" });
+
+      // 01:30 happens twice on Sunday: sent at the first, not again at the second.
+      await sendAt("01:30");
+      expect(await run(new Date("2026-11-01T05:30:00Z"))).toMatchObject({ outcomes: { sent: 1 } });
+      expect(await run(new Date("2026-11-01T06:30:00Z"))).toMatchObject({ outcomes: { "already-sent": 1 } });
+      expect(await record(OWNER)).toMatchObject({ day: "2026-11-01" });
+      expect(socle.events()).toHaveLength(2);
+    });
+  });
+
   it("retries with the same key after Socle was unavailable", async () => {
     await seedDay();
     socle.answerNext("/events", { status: 503 }, { status: 503 });
@@ -994,6 +1105,53 @@ describe("the daily summary, for every account", () => {
       "Toronto",
     ])
       expect(all).not.toContain(leak);
+  });
+});
+
+describe("the send window, on the person's clock", () => {
+  const TORONTO = "America/Toronto";
+  const dayAt = (sendAt: string, iso: string) =>
+    sendDayFor(sendAt, new Date(iso), TORONTO);
+
+  it("runs two hours from the send time, past midnight too, as the day the send time belongs to", () => {
+    // 23:30 on Friday 2026-11-27 (EST): open until 01:30 on Saturday.
+    expect(dayAt("23:30", "2026-11-28T04:29:00Z")).toBeNull(); // 23:29
+    expect(dayAt("23:30", "2026-11-28T04:30:00Z")).toBe("2026-11-27");
+    expect(dayAt("23:30", "2026-11-28T05:00:00Z")).toBe("2026-11-27"); // midnight
+    expect(dayAt("23:30", "2026-11-28T06:29:00Z")).toBe("2026-11-27"); // 01:29
+    expect(dayAt("23:30", "2026-11-28T06:30:00Z")).toBeNull(); // 01:30
+    // 22:30 ends at 00:30; 00:30 is its own day's.
+    expect(dayAt("22:30", "2026-11-28T05:29:00Z")).toBe("2026-11-27");
+    expect(dayAt("22:30", "2026-11-28T05:30:00Z")).toBeNull();
+    expect(dayAt("00:30", "2026-11-28T05:15:00Z")).toBeNull(); // 00:15
+    expect(dayAt("00:30", "2026-11-28T05:30:00Z")).toBe("2026-11-28");
+    // Across a year's end.
+    expect(dayAt("23:00", "2027-01-01T05:30:00Z")).toBe("2026-12-31");
+    expect(dayAt("07:00", "2026-11-27T12:05:00Z")).toBe("2026-11-27");
+  });
+
+  it("goes by the wall clock across Toronto's DST changes", () => {
+    // Spring forward, Sunday 2026-03-08: 02:00 EST becomes 03:00 EDT.
+    expect(dayAt("23:30", "2026-03-08T05:15:00Z")).toBe("2026-03-07"); // 00:15 EST
+    // 01:30 is open from 01:30 EST to 03:30 EDT: one real hour.
+    expect(dayAt("01:30", "2026-03-08T06:30:00Z")).toBe("2026-03-08"); // 01:30 EST
+    expect(dayAt("01:30", "2026-03-08T07:15:00Z")).toBe("2026-03-08"); // 03:15 EDT
+    expect(dayAt("01:30", "2026-03-08T07:30:00Z")).toBeNull(); // 03:30 EDT
+    // 02:30 never shows on the clock: it opens at 03:00 EDT, never as the day before's.
+    expect(dayAt("02:30", "2026-03-08T06:45:00Z")).toBeNull(); // 01:45 EST
+    expect(dayAt("02:30", "2026-03-08T07:00:00Z")).toBe("2026-03-08"); // 03:00 EDT
+    expect(dayAt("02:30", "2026-03-08T08:29:00Z")).toBe("2026-03-08"); // 04:29 EDT
+    expect(dayAt("02:30", "2026-03-08T08:30:00Z")).toBeNull(); // 04:30 EDT
+
+    // Fall back, Sunday 2026-11-01: 02:00 EDT becomes 01:00 EST.
+    expect(dayAt("23:30", "2026-11-01T03:45:00Z")).toBe("2026-10-31"); // 23:45 EDT
+    expect(dayAt("23:30", "2026-11-01T05:15:00Z")).toBe("2026-10-31"); // 01:15 EDT
+    expect(dayAt("23:30", "2026-11-01T06:15:00Z")).toBe("2026-10-31"); // 01:15 EST
+    expect(dayAt("23:30", "2026-11-01T06:30:00Z")).toBeNull(); // 01:30 EST
+    // 01:30 comes twice; between the two, 01:00 to 01:29 EST is outside it.
+    expect(dayAt("01:30", "2026-11-01T05:30:00Z")).toBe("2026-11-01"); // 01:30 EDT
+    expect(dayAt("01:30", "2026-11-01T06:15:00Z")).toBeNull(); // 01:15 EST
+    expect(dayAt("01:30", "2026-11-01T06:30:00Z")).toBe("2026-11-01"); // 01:30 EST
   });
 });
 

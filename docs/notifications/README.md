@@ -207,6 +207,9 @@ session), `src/server/notification-digest.ts` (the daily summary),
     (409 `recipient-opted-out`).
   - When: from `digest.sendAt` local, retried for two hours if Socle is down,
     at most once per local day. Skipped when empty, without asking Socle.
+    The two hours follow the wall clock and run past midnight: a 23:30
+    send time is retried until 01:30, still as the day before's. An earlier
+    day's summary never goes after a later day's.
   - The Idempotency-Key is a random UUID kept in the sent-today record and
     reused on a retry, with the counts it first went with: a retry sends
     exactly the same body, even if a task changed in between, so Socle

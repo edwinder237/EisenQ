@@ -36,7 +36,7 @@ import type {
   SocleFailure,
   SocleRecipient,
 } from "~/server/socle";
-import { ymdInZone } from "~/server/timezone";
+import { dayBefore, wallClockInZone, ymdInZone } from "~/server/timezone";
 
 // The daily summary (docs/notifications/README.md, "Daily email"). A Vercel
 // cron every 15 minutes (GET /api/cron/notifications-digest) sends it to every
@@ -124,24 +124,27 @@ export function isEmpty(c: DigestCounts): boolean {
   return c.dueCount + c.comingUpCount + c.missedRoutinesCount === 0;
 }
 
-/** Whether "HH:mm" local has come, within the catch-up window, on this local day. */
-export function inSendWindow(
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * The local day whose send window holds `now`, or null when none does. The
+ * window opens at "HH:mm" on the person's wall clock and stays open for the
+ * catch-up time, wrapping past midnight: at 00:15, a 23:30 send time's window
+ * is still open, and it's the day before's. That day is the one the summary
+ * is claimed for and checked against. Across a DST change the window follows
+ * the wall clock, so it may hold one real hour more or less.
+ */
+export function sendDayFor(
   sendAt: string,
   now: Date,
   timeZone: string,
-): boolean {
+): string | null {
   const [h = 0, m = 0] = sendAt.split(":").map(Number);
-  const local = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hourCycle: "h23",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).formatToParts(now);
-  const get = (type: string) =>
-    Number(local.find((p) => p.type === type)?.value ?? 0);
-  const minutes = get("hour") * 60 + get("minute");
+  const { ymd, minutes } = wallClockInZone(now, timeZone);
   const target = h * 60 + m;
-  return minutes >= target && minutes < target + CATCH_UP_MINUTES;
+  const since = (minutes - target + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  if (since >= CATCH_UP_MINUTES) return null;
+  return minutes >= target ? ymd : dayBefore(ymd);
 }
 
 /**
@@ -251,7 +254,14 @@ async function claimToday(
   if (record?.day !== today) {
     const key = randomUUID();
     const r = await userSettingsCollection.updateOne(
-      { userId, "notificationDigest.day": { $ne: today } },
+      // Only over an earlier day's record, never a later one's.
+      {
+        userId,
+        $or: [
+          { "notificationDigest.day": { $exists: false } },
+          { "notificationDigest.day": { $lt: today } },
+        ],
+      },
       {
         $set: {
           notificationDigest: {
@@ -314,11 +324,15 @@ async function digestFor(
     outcome,
     calledSocle,
   });
-  if (!inSendWindow(ctx.prefs.digest.sendAt, now, ctx.timeZone))
-    return done("not-due");
-  const today = ymdInZone(now, ctx.timeZone);
+  // "today" is the local day the send time belongs to: after midnight, in a
+  // late send time's window, the day before.
+  const today = sendDayFor(ctx.prefs.digest.sendAt, now, ctx.timeZone);
+  if (!today) return done("not-due");
   if (ctx.digest?.day === today && FINAL.has(ctx.digest.status))
     return done("already-sent");
+  // A later day's already has its record (the send time moved past
+  // midnight): an earlier day's never goes after it.
+  if (ctx.digest && ctx.digest.day > today) return done("already-sent");
 
   const claim = await claimToday(userId, ctx.digest, today, now);
   if (!claim) return done("in-progress");
@@ -748,9 +762,11 @@ async function countClosingWindows(
       cursor = doc._id;
       const ctx = contextFrom(doc.userId, doc, now);
       const { sendAt } = ctx.prefs.digest;
-      if (!inSendWindow(sendAt, now, ctx.timeZone) || inSendWindow(sendAt, next, ctx.timeZone)) continue;
-      const today = ymdInZone(now, ctx.timeZone);
+      // Open now, and closed by the next run (or open then for another day).
+      const today = sendDayFor(sendAt, now, ctx.timeZone);
+      if (!today || sendDayFor(sendAt, next, ctx.timeZone) === today) continue;
       if (ctx.digest?.day === today && FINAL.has(ctx.digest.status)) continue;
+      if (ctx.digest && ctx.digest.day > today) continue;
       // A key that already went keeps its counts, never empty: a retry sends those.
       if (ctx.digest?.day === today && ctx.digest.counts) {
         missed++;

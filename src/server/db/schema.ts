@@ -230,7 +230,7 @@ export interface NotificationChannels {
 }
 
 export interface DigestRecord {
-  day: string;          // the person's local "YYYY-MM-DD"
+  day: string;          // the person's local "YYYY-MM-DD" the send time belongs to (after midnight in a late send time's window: the day before)
   key: string;          // random UUID, sent as the Idempotency-Key
   // The counts this key first went to Socle with, set just before that first
   // send. Every retry with the key sends exactly these, so Socle either
