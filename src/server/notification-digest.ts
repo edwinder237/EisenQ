@@ -357,7 +357,7 @@ export async function sendTestDigest(
       "digest_test_sent",
       result.eventId ? { eventId: result.eventId } : {},
     );
-    return { sentTo: recipient.email };
+    return { sentTo: recipient.email ?? "" };
   }
 
   logRefusal("digest_test_refused", result);
