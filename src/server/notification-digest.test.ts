@@ -276,7 +276,15 @@ describe("the daily summary, for every account", () => {
       vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE] }) as never);
     });
 
-    it("is only marked at the first 404, deleted at a 404 an hour later, and never sent to", async () => {
+    it("is only marked at the first 404, deleted at a 404 an hour later in a run that finds someone else, and never sent to", async () => {
+      // Someone Clerk does find, due at 08:00: in the hour-later run.
+      const FOUND = "user_2foundFoundFound00007";
+      await seedSettings(FOUND, { notifications: { digest: { sendAt: "08:00" } } });
+      await overdueTask(FOUND);
+      const gone = () =>
+        socle.calls
+          .filter((c) => c.body.recipientId === GONE || (c.body.recipient as { id?: string } | undefined)?.id === GONE)
+          .map((c) => [c.path, GONE]);
       expect(await run(at(0))).toMatchObject({
         outcomes: { "missing-in-clerk": 1, empty: 1 },
         clerkMissing: { marked: 1, deleted: 0, misconfigured: false },
@@ -294,17 +302,55 @@ describe("the daily summary, for every account", () => {
       expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(1);
 
       // An hour after the first 404: deleted, here and in Socle, and nothing else reached Socle.
-      expect(await run(at(60))).toMatchObject({ clerkMissing: { marked: 0, deleted: 1 } });
-      expect(socle.calls.map((c) => [c.path, c.body.recipientId])).toEqual([["/recipients/delete", GONE]]);
+      expect(await run(at(60))).toMatchObject({
+        outcomes: { sent: 1, "missing-in-clerk": 1 },
+        clerkMissing: { marked: 0, deleted: 1 },
+      });
+      expect(gone()).toEqual([["/recipients/delete", GONE]]);
       expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(0);
       expect((await theirs())?.notificationChannels).toMatchObject({ email: false, bell: false });
       expect((await theirs())?.notificationDigest).toBeUndefined();
 
       // From then on, they aren't read at all.
-      expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
-      expect(socle.calls).toHaveLength(1);
+      expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 2 });
+      expect(gone()).toHaveLength(1);
       expect(logs.join("\n")).toContain('"event":"digest_clerk_missing","marked":1,"deleted":0');
       expect(logs.join("\n")).not.toContain(GONE);
+    });
+
+    it("deletes nobody with a Clerk key for the wrong instance: every look-up 404, twice, over an hour apart", async () => {
+      // Two accounts due, and Clerk (another instance) has neither.
+      await overdueTask(OWNER);
+      vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [OWNER, GONE] }) as never);
+      expect(await run(at(0))).toMatchObject({
+        outcomes: { "missing-in-clerk": 2 },
+        clerkMissing: { marked: 2, deleted: 0, misconfigured: false },
+      });
+      expect(await run(at(70))).toMatchObject({
+        outcomes: { "missing-in-clerk": 2 },
+        clerkMissing: { marked: 0, deleted: 0, misconfigured: false },
+      });
+      // Nobody deleted, nothing sent, and the marks are kept.
+      expect(socle.calls).toEqual([]);
+      for (const id of [OWNER, GONE]) {
+        const doc = await userSettingsCollection.findOne({ userId: id });
+        expect(doc?.notificationsDeletedAt).toBeUndefined();
+        expect(doc?.clerkMissingSince).toEqual(at(0));
+        expect(await notificationStatesCollection.countDocuments({ userId: id })).toBe(id === GONE ? 1 : 0);
+      }
+      const all = logs.join("\n");
+      expect(all.match(/digest_clerk_deletions_held/g)).toHaveLength(1);
+      expect(all).toContain('"event":"digest_clerk_deletions_held","count":2');
+      for (const id of [OWNER, GONE]) expect(all).not.toContain(id);
+
+      // The key is fixed: Clerk finds the owner, so the real deletion goes through.
+      vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE] }) as never);
+      expect(await run(at(80))).toMatchObject({
+        outcomes: { sent: 1, "missing-in-clerk": 1 },
+        clerkMissing: { marked: 0, deleted: 1 },
+      });
+      expect(socle.to("/recipients/delete").map((c) => c.body.recipientId)).toEqual([GONE]);
+      expect((await userSettingsCollection.findOne({ userId: OWNER }))?.clerkMissingSince).toBeUndefined();
     });
 
     it("has its mark cleared when Clerk finds the account again", async () => {

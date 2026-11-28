@@ -74,8 +74,10 @@ const MIN_CALL_MS = 500;
 const RUN_EVERY_MS = 15 * 60_000;
 const MISSED_SCAN_PAGES = 10;
 // An account Clerk says it doesn't have (404) is deleted only on a second 404
-// at least an hour after the first, and only if the run saw at most 5: more
-// than that looks like a Clerk key for the wrong instance, not deletions.
+// at least an hour after the first, only if the same run also found someone
+// else in Clerk, and only if the run saw at most 5 404s. A run where Clerk
+// found nobody, or answered 404 for more than 5, looks like a Clerk key for
+// the wrong instance, not deletions: marks stay, and nobody is deleted.
 export const CLERK_MISSING_CONFIRM_MS = 60 * 60_000;
 export const CLERK_MISSING_TRIP = 5;
 const FINAL: ReadonlySet<DigestRecord["status"]> = new Set([
@@ -209,10 +211,12 @@ export interface DigestRunOptions {
 /** Someone Clerk answered 404 for this run, and since when it has (their mark, if any). */
 type MissingInClerk = { userId: string; since?: Date };
 
-/** What one person's summary may use: the hooks, the time left in the run, and where to note a 404. */
+/** What one person's summary may use: the hooks, the time left in the run, and where to note Clerk's answers. */
 type PersonOptions = Pick<DigestRunOptions, "addressFor" | "sleep"> & {
   left: () => number;
   missing: MissingInClerk[];
+  /** Clerk look-ups this run that found the account. */
+  clerk: { found: number };
 };
 
 class OutOfTime extends Error {
@@ -390,6 +394,7 @@ async function sendClaimed(
     await settle("pending");
     return done("missing-in-clerk");
   }
+  opts.clerk.found++;
   // Clerk knows them: an earlier 404 was a blip.
   if (ctx.clerkMissingSince)
     await userSettingsCollection
@@ -534,7 +539,8 @@ export async function runDigests(
   if (!socle) return finish({ status: "off", reason: "socle-not-configured" });
   const left = () => Math.max(0, RUN_DEADLINE_MS - elapsed());
   const missing: MissingInClerk[] = [];
-  const person: PersonOptions = { ...opts, left, missing };
+  const clerk = { found: 0 };
+  const person: PersonOptions = { ...opts, left, missing, clerk };
 
   // Deleted accounts Socle hasn't confirmed yet go first (legal's deletion
   // rule), in the run's first seconds only.
@@ -582,7 +588,9 @@ export async function runDigests(
     if (page.length < pageSize) break;
   }
   const clerkMissing =
-    missing.length > 0 ? await settleMissing(missing, socle, now, left) : undefined;
+    missing.length > 0
+      ? await settleMissing(missing, clerk.found, socle, now, left)
+      : undefined;
   const windowMissed = capped
     ? await countClosingWindows(after, now, pageSize, left)
     : { count: 0, complete: true };
@@ -607,10 +615,14 @@ export async function runDigests(
  * misconfigured (a key for the wrong instance, say), so nobody is marked or
  * deleted, and one warning gives the count. Otherwise each first 404 marks the
  * person (clerkMissingSince), and a 404 at least an hour after their mark
- * deletes their notifications, here and in Socle. Counts only in the logs.
+ * deletes their notifications, here and in Socle, but only if this run also
+ * found someone else in Clerk. If it found nobody, the marks stay and nobody
+ * is deleted (one line, the count), and a later run with a success does it.
+ * Counts only in the logs.
  */
 async function settleMissing(
   missing: MissingInClerk[],
+  found: number,
   socle: SocleClient,
   now: Date,
   left: () => number,
@@ -619,6 +631,11 @@ async function settleMissing(
     logNotifications("warn", "digest_clerk_misconfigured", { count: missing.length });
     return { marked: 0, deleted: 0, misconfigured: true };
   }
+  const confirmed = ({ since }: MissingInClerk) =>
+    since !== undefined && now.getTime() - since.getTime() >= CLERK_MISSING_CONFIRM_MS;
+  const held = found === 0 ? missing.filter(confirmed).length : 0;
+  if (held > 0)
+    logNotifications("warn", "digest_clerk_deletions_held", { count: held });
   let marked = 0;
   let deleted = 0;
   for (const { userId, since } of missing) {
@@ -633,7 +650,7 @@ async function settleMissing(
           { $set: { clerkMissingSince: now } },
         );
         marked += r.modifiedCount;
-      } else if (now.getTime() - since.getTime() >= CLERK_MISSING_CONFIRM_MS) {
+      } else if (found > 0 && confirmed({ userId, since })) {
         // Socle's part may wait for the deletions' retries if time is short.
         if (left() < MIN_CALL_MS) break;
         await deleteNotificationsFor(userId, socle, now, { timeoutMs: left() });
