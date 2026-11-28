@@ -188,30 +188,67 @@ export interface UserSettings {
   // AI connectors (MCP). Absent until the user first saves the AI connectors
   // tab; readers fill in defaults with normalizeMcpSettings().
   mcp?: McpSettings;
-  // Notifications (docs/notifications/README.md). Absent until first saved;
-  // readers fill gaps from DEFAULT_NOTIFICATION_PREFERENCES. The digest's
-  // address is never stored: it's always the Clerk primary email.
+  // Notifications (docs/notifications/README.md): what EisenQ keeps itself.
+  // Absent until first saved; readers fill gaps from
+  // DEFAULT_NOTIFICATION_PREFERENCES. The address is never stored: it's always
+  // the verified Clerk primary email. The email and bell switches are Socle's
+  // (notificationChannels below); `digest.enabled` is an older build's value,
+  // read by nothing.
   notifications?: {
     events?: Partial<NotificationPreferences["events"]>;
     defaultLead?: NotificationPreferences["defaultLead"];
     digest?: { enabled?: boolean; sendAt?: string };
   };
+  // EisenQ's copy of the person's email and bell switches, as Socle last
+  // answered them. Socle is the source of truth and gates every send; the copy
+  // only chooses whom the daily job considers, whether the bell asks Socle for
+  // a session, and the bell's footer. Absent: Socle's defaults, email off and
+  // the bell on.
+  notificationChannels?: NotificationChannels;
   // The daily email's sent-today record: one per person, for their latest
   // local day. At most one digest per day. `key` is the Idempotency-Key, a
   // random UUID made when the day's record is created and reused on a retry,
   // so Socle never sends that day twice.
   notificationDigest?: DigestRecord;
+  // "Send a test": how many today, in the person's zone (3 a day).
+  notificationTests?: { day: string; count: number };
+  // Set when the account was deleted (Clerk's event, or Clerk's 404): its
+  // notification data is gone and nothing may write it back.
+  notificationsDeletedAt?: Date;
+  // When the daily job first found no such account in Clerk. A second 404 at
+  // least an hour later deletes its notifications; Clerk finding it clears
+  // this. No ID is ever logged with it.
+  clerkMissingSince?: Date;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface NotificationChannels {
+  email: boolean;
+  bell: boolean;
+  checkedAt: Date;      // when Socle last said so
 }
 
 export interface DigestRecord {
   day: string;          // the person's local "YYYY-MM-DD"
   key: string;          // random UUID, sent as the Idempotency-Key
   // sending: a run holds it. pending: Socle was unavailable, the next run
-  // retries with the same key. The others are final for the day.
-  status: "sending" | "pending" | "sent" | "empty" | "refused" | "no-email";
+  // retries with the same key. The others are final for the day: sent,
+  // nothing to report (empty), email and bell both off (opted-out), email on
+  // without a verified address (no-email), or refused by Socle.
+  status: "sending" | "pending" | "sent" | "empty" | "refused" | "no-email" | "opted-out";
   claimedAt?: Date;
+}
+
+// A deleted account whose deletion Socle hasn't confirmed yet (legal's
+// deletion rule): the user ID only, retried by the daily job until Socle
+// answers 204, then removed.
+export interface NotificationDeletion {
+  _id?: ObjectId;
+  userId: string;
+  since: Date;
+  attempts: number;
+  lastTriedAt?: Date;
 }
 
 // Per-notification state for one person, keyed by the derived id from
@@ -286,4 +323,5 @@ export const collections = {
   maintenanceItems: "maintenanceItems",
   userSettings: "userSettings",
   notificationStates: "notificationStates",
+  notificationDeletions: "notificationDeletions",
 } as const;

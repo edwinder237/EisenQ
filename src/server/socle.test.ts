@@ -163,4 +163,168 @@ describe("sendDigestEvent", () => {
     ).sendDigestEvent(event);
     expect(down).toEqual({ kind: "unreachable", reason: "network" });
   });
+
+  it("leaves the address out for a bell-only event, and reads where it went", async () => {
+    const fetchImpl = stub(202, { channels: ["in_app", "sms"] });
+    const result = await createSocleClient(config, fetchImpl).sendDigestEvent({
+      ...event,
+      recipient: { id: event.recipient.id },
+    });
+    expect(result).toEqual({
+      kind: "accepted",
+      replayed: false,
+      channels: ["in_app"],
+    });
+    const sent = JSON.parse(fetchImpl.mock.calls[0]![1]?.body as string) as {
+      recipient: Record<string, unknown>;
+    };
+    expect(sent.recipient).toEqual({ id: event.recipient.id });
+  });
+
+  it("keeps a 422's JSON Pointers, never its values", async () => {
+    const result = await createSocleClient(
+      config,
+      stub(422, {
+        type: "https://socle-services.app/problems/recipient-invalid",
+        errors: [
+          { in: "body", pointer: "/recipient/email", detail: "Required" },
+          { pointer: "owner@example.com" },
+        ],
+      }),
+    ).sendDigestEvent(event);
+    expect(result).toEqual({
+      kind: "problem",
+      status: 422,
+      type: "recipient-invalid",
+      pointers: ["/recipient/email"],
+    });
+  });
+
+  it("reads 409 recipient-opted-out", async () => {
+    const result = await createSocleClient(
+      config,
+      stub(409, {
+        type: "https://socle-services.app/problems/recipient-opted-out",
+      }),
+    ).sendDigestEvent(event);
+    expect(result).toMatchObject({ status: 409, type: "recipient-opted-out" });
+  });
+});
+
+describe("the person's calls: the ID in the body, never in the address", () => {
+  const ID = "user_2ownerOwnerOwner00001";
+  const choices = {
+    channels: {
+      email: {
+        enabled: true,
+        changedAt: "2026-11-27T12:00:00.000Z",
+        changedVia: "app",
+      },
+      in_app: { enabled: true, changedAt: null, changedVia: null },
+    },
+  };
+
+  function sentTo(fetchImpl: ReturnType<typeof stub>) {
+    const [input, init] = fetchImpl.mock.calls[0]!;
+    const url = input instanceof Request ? input.url : input.toString();
+    expect(url).not.toContain(ID);
+    expect(new Headers(init?.headers).get("authorization")).toBe(
+      "Bearer test-key",
+    );
+    expect(init?.redirect).toBe("error");
+    return {
+      url,
+      method: init?.method,
+      body: JSON.parse(init?.body as string) as unknown,
+    };
+  }
+
+  it("bellSession passes Socle's opaque session on, unread", async () => {
+    const fetchImpl = stub(200, {
+      session: "sb1.eyJ2IjoxfQ",
+      expiresAt: "2026-11-28T03:00:00.000Z",
+    });
+    expect(
+      await createSocleClient(config, fetchImpl).bellSession(ID),
+    ).toEqual({
+      kind: "ok",
+      session: "sb1.eyJ2IjoxfQ",
+      expiresAt: "2026-11-28T03:00:00.000Z",
+    });
+    expect(sentTo(fetchImpl)).toEqual({
+      url: "https://socle.test/v1/notifications/bell-sessions",
+      method: "POST",
+      body: { recipientId: ID },
+    });
+    expect(
+      await createSocleClient(config, stub(200, { session: 3 })).bellSession(
+        ID,
+      ),
+    ).toMatchObject({ kind: "problem", type: "unexpected-answer" });
+    expect(
+      await createSocleClient(
+        config,
+        stub(403, {
+          type: "https://socle-services.app/problems/insufficient_scope",
+        }),
+      ).bellSession(ID),
+    ).toMatchObject({ kind: "problem", status: 403 });
+  });
+
+  it("lookupPreferences and setPreferences read Socle's switches", async () => {
+    const lookup = stub(200, choices);
+    expect(
+      await createSocleClient(config, lookup).lookupPreferences(ID),
+    ).toEqual({ kind: "ok", choices: choices.channels });
+    expect(sentTo(lookup)).toEqual({
+      url: "https://socle.test/v1/notifications/preferences/lookup",
+      method: "POST",
+      body: { recipientId: ID },
+    });
+
+    const set = stub(200, choices);
+    await createSocleClient(config, set).setPreferences(ID, { email: true });
+    expect(sentTo(set)).toEqual({
+      url: "https://socle.test/v1/notifications/preferences",
+      method: "PUT",
+      body: { recipientId: ID, channels: { email: true } },
+    });
+
+    expect(
+      await createSocleClient(
+        config,
+        stub(200, { channels: { email: {} } }),
+      ).lookupPreferences(ID),
+    ).toMatchObject({ kind: "problem", type: "unexpected-answer" });
+  });
+
+  it("deleteRecipient is done on 204, and anything else is a failure to retry", async () => {
+    const fetchImpl = vi.fn(
+      async (_url: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
+    expect(
+      await createSocleClient(config, fetchImpl).deleteRecipient(ID),
+    ).toEqual({ kind: "deleted" });
+    expect(sentTo(fetchImpl)).toEqual({
+      url: "https://socle.test/v1/notifications/recipients/delete",
+      method: "POST",
+      body: { recipientId: ID },
+    });
+    expect(
+      await createSocleClient(
+        config,
+        stub(
+          503,
+          { type: "https://socle-services.app/problems/delivery-unavailable" },
+          { "retry-after": "5" },
+        ),
+      ).deleteRecipient(ID),
+    ).toEqual({
+      kind: "problem",
+      status: 503,
+      type: "delivery-unavailable",
+      retryAfterSeconds: 5,
+    });
+  });
 });

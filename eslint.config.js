@@ -7,7 +7,9 @@ const compat = new FlatCompat({
 
 export default tseslint.config(
   {
-		ignores: ['.next']
+		// The copy of Socle's bell is Socle's code, checked by its own tests and
+		// SHA256SUMS, and never edited here (src/vendor/socle-bell/VERSION).
+		ignores: ['.next', 'src/vendor/socle-bell/**']
 	},
   ...compat.extends("next/core-web-vitals"),
   {

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import toast from "react-hot-toast";
+import { privacyNoticePublished } from "~/lib/privacy-notice";
 import type { NotificationsApi } from "~/lib/notifications/client";
 import {
   REMINDER_LEAD_LABELS,
@@ -12,6 +13,9 @@ import {
 
 // Settings → Notifications. A controlled draft, like AiConnectorsPanel: the
 // dashboard holds it and saves it with the rest of Settings on "Save changes".
+// The daily email and bell switches are Socle's: EisenQ's server reads and
+// writes them there, and this shows what Socle answered, including an email
+// turned off from an email's link.
 
 const EVENTS: { id: NotificationEvent; label: string; hint: string }[] = [
   { id: "due", label: "Due today & overdue", hint: "Tasks with a due date" },
@@ -24,7 +28,11 @@ const LEADS: Exclude<ReminderLead, "off">[] = ["same_day", "1_day", "2_days", "1
 
 export function notificationPrefsEqual(a: NotificationPreferences | null, b: NotificationPreferences | null) {
   if (!a || !b) return a === b;
-  const strip = (p: NotificationPreferences) => ({ ...p, digest: { enabled: p.digest.enabled, sendAt: p.digest.sendAt } });
+  // Only what the person can change: not the address, nor whether Socle answered.
+  const strip = ({ channelsUnavailable: _unavailable, ...p }: NotificationPreferences) => ({
+    ...p,
+    digest: { enabled: p.digest.enabled, sendAt: p.digest.sendAt },
+  });
   return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
 }
 
@@ -78,6 +86,10 @@ export function NotificationsSettings({ api, draft, onChange }: {
     </div>
   );
   const box = { background: "var(--field)", border: "1px solid var(--field-bd)" } as const;
+  // Socle couldn't be reached: the two switches show EisenQ's last copy and stay still.
+  const locked = draft.channelsUnavailable === true;
+  // No email can go to an address Clerk hasn't verified, so it can't be turned on.
+  const noAddress = draft.digest.addressUnverified === true && !draft.digest.enabled;
 
   return (
     <div className="flex flex-col gap-7">
@@ -142,14 +154,38 @@ export function NotificationsSettings({ api, draft, onChange }: {
             />
           </label>
           <span className="flex-1 min-w-0 truncate text-[12.5px]" style={{ color: "var(--muted)" }}>
-            {draft.digest.address ? `to ${draft.digest.address}` : "to your account email"}
+            {draft.digest.address
+              ? `to ${draft.digest.address}`
+              : draft.digest.addressUnverified
+                ? "Verify your account email to get it"
+                : "to your account email"}
           </span>
-          <button type="button" onClick={() => void sendTest()} disabled={sending || !draft.digest.enabled}
+          <button type="button" onClick={() => void sendTest()} disabled={sending || !draft.digest.enabled || !draft.digest.address}
             className="text-[12.5px] disabled:opacity-50" style={{ color: "var(--accent)" }}>
             {sending ? "Sending…" : "Send a test"}
           </button>
-          <Switch on={draft.digest.enabled} onToggle={() => onChange({ ...draft, digest: { ...draft.digest, enabled: !draft.digest.enabled } })} label="Daily email" />
+          <Switch on={draft.digest.enabled} disabled={locked || noAddress} onToggle={() => onChange({ ...draft, digest: { ...draft.digest, enabled: !draft.digest.enabled } })} label="Daily email" />
         </div>
+      </section>
+
+      <section>
+        {heading("Bell notices", "One-off notices in the bell, such as a copy of the daily summary. Your reminders show either way.")}
+        <div className="rounded-[12px] flex items-center gap-3" style={{ ...box, padding: "11px 14px" }}>
+          <span className="flex-1 min-w-0 text-[13.5px]" style={{ color: "var(--ink)" }}>Show notices in the bell</span>
+          <Switch on={draft.bell.enabled} disabled={locked} onToggle={() => onChange({ ...draft, bell: { enabled: !draft.bell.enabled } })} label="Bell notices" />
+        </div>
+        {locked && (
+          <div className="text-[12px] mt-2" style={{ color: "var(--muted)" }}>
+            Couldn&apos;t load your email and bell choices just now, so they can&apos;t be changed. Try again later.
+          </div>
+        )}
+        {/* Only once the notice has its contact address (~/lib/privacy-notice.ts). */}
+        {privacyNoticePublished() && (
+          <p className="text-[12px] mt-3" style={{ color: "var(--muted)" }}>
+            The daily email and bell notices are optional, and you can turn them off here at any time.{" "}
+            <a href="/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: "var(--accent)" }}>Privacy notice</a>
+          </p>
+        )}
       </section>
     </div>
   );

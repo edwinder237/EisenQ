@@ -1,6 +1,6 @@
 import { MongoClient, type Db } from "mongodb";
 import { env } from "~/env";
-import type { Task, Goal, ChecklistItem, MaintenanceItem, UserSettings, NotificationState } from "./schema";
+import type { Task, Goal, ChecklistItem, MaintenanceItem, UserSettings, NotificationState, NotificationDeletion } from "./schema";
 import { collections } from "./schema";
 
 // Global reference to persist connection across serverless function invocations
@@ -33,3 +33,4 @@ export const checklistItemsCollection = db.collection<ChecklistItem>(collections
 export const maintenanceItemsCollection = db.collection<MaintenanceItem>(collections.maintenanceItems);
 export const userSettingsCollection = db.collection<UserSettings>(collections.userSettings);
 export const notificationStatesCollection = db.collection<NotificationState>(collections.notificationStates);
+export const notificationDeletionsCollection = db.collection<NotificationDeletion>(collections.notificationDeletions);

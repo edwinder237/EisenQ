@@ -1,9 +1,8 @@
 // Notifications: the contract between the front end and the backend.
 //
-// The front end only ever talks to `NotificationsApi` (./client.ts). Today it
-// runs on a mock that keeps state in the browser; the backend team implements
-// the HTTP routes under /api/notifications/* with exactly these shapes, then
-// flips the mode to "live". See docs/notifications/README.md.
+// The front end only ever talks to `NotificationsApi` (./client.ts), live by
+// default, on the HTTP routes under /api/notifications/* with exactly these
+// shapes. See docs/notifications/README.md.
 
 /** Which part of the bell panel an item sits in. */
 export type NotificationGroup =
@@ -84,12 +83,26 @@ export interface NotificationPreferences {
   /** Default heads-up for routines and maintenance; items may override it. */
   defaultLead: Exclude<ReminderLead, "off">;
   digest: {
+    /**
+     * The daily email. Held by Socle, not EisenQ: off until the person turns
+     * it on and saves, and turned off by the link in any summary email.
+     */
     enabled: boolean;
     /** Local time "HH:mm" in the person's time zone. */
     sendAt: string;
-    /** Read-only for the client: the account email the digest goes to. */
+    /** Read-only for the client: the verified account email the digest goes to. */
     address?: string;
+    /** Read-only: the account's primary email isn't verified, so no email can go. */
+    addressUnverified?: boolean;
   };
+  /**
+   * Notices in the bell, such as the daily summary's copy. Held by Socle: on
+   * until the person turns it off. EisenQ's own reminders follow the in-app
+   * switches above, whatever this says.
+   */
+  bell: { enabled: boolean };
+  /** Read-only: Socle couldn't be reached, so the email and bell switches show EisenQ's last copy. */
+  channelsUnavailable?: boolean;
 }
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
@@ -100,7 +113,9 @@ export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
     ai_activity: { inApp: true, email: null },
   },
   defaultLead: "2_days",
-  digest: { enabled: true, sendAt: "07:00" },
+  // Socle's defaults: email off, the bell on (amended design record, point 6).
+  digest: { enabled: false, sendAt: "07:00" },
+  bell: { enabled: true },
 };
 
 /** Per-item override of the heads-up, e.g. a week ahead for the annual doctor visit. */

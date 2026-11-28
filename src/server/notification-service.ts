@@ -57,9 +57,15 @@ const DAY = 86_400_000;
 const LEADS = ["same_day", "1_day", "2_days", "1_week"] as const;
 const SEND_AT = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-/** Saved preferences with every gap filled from DEFAULT_NOTIFICATION_PREFERENCES. */
+/**
+ * Saved preferences with every gap filled from DEFAULT_NOTIFICATION_PREFERENCES.
+ * The email and bell switches are Socle's: here they come from EisenQ's copy
+ * of Socle's last answer, and with no copy, Socle's defaults (email off, the
+ * bell on). An older build's stored digest.enabled is never read.
+ */
 export function normalizePreferences(
   stored?: UserSettings["notifications"],
+  channels?: UserSettings["notificationChannels"],
 ): NotificationPreferences {
   const d = DEFAULT_NOTIFICATION_PREFERENCES;
   const toggle = (event: NotificationEvent) => {
@@ -90,18 +96,20 @@ export function normalizePreferences(
         ? lead
         : d.defaultLead,
     digest: {
-      enabled:
-        typeof stored?.digest?.enabled === "boolean"
-          ? stored.digest.enabled
-          : d.digest.enabled,
+      enabled: channels ? channels.email === true : d.digest.enabled,
       sendAt: sendAt && SEND_AT.test(sendAt) ? sendAt : d.digest.sendAt,
     },
+    bell: { enabled: channels ? channels.bell !== false : d.bell.enabled },
   };
 }
 
-/** What is stored: the preferences without the address, which is always the Clerk email. */
+/**
+ * What EisenQ stores itself: the per-event switches, the heads-up and the send
+ * time. Never the address, and never the email and bell switches, which are
+ * Socle's.
+ */
 export function preferencesToStore(
-  prefs: NotificationPreferences,
+  prefs: Pick<NotificationPreferences, "events" | "defaultLead" | "digest">,
 ): NonNullable<UserSettings["notifications"]> {
   return {
     events: {
@@ -117,13 +125,13 @@ export function preferencesToStore(
       ai_activity: { inApp: prefs.events.ai_activity.inApp, email: null },
     },
     defaultLead: prefs.defaultLead,
-    digest: { enabled: prefs.digest.enabled, sendAt: prefs.digest.sendAt },
+    digest: { sendAt: prefs.digest.sendAt },
   };
 }
 
 export async function savePreferences(
   userId: string,
-  prefs: NotificationPreferences,
+  prefs: Pick<NotificationPreferences, "events" | "defaultLead" | "digest">,
   now = new Date(),
 ) {
   // The digest needs no rescheduling: the cron reads sendAt on every run.
@@ -137,6 +145,32 @@ export async function savePreferences(
   );
 }
 
+/**
+ * Keeps EisenQ's copy of what Socle just answered for the person's email and
+ * bell. Never for a deleted account (notificationsDeletedAt): a run in flight
+ * while the account is deleted would otherwise write "bell on" back, and the
+ * account would rejoin later runs. Answers false when it's deleted.
+ */
+export async function saveChannelsCopy(
+  userId: string,
+  channels: { email: boolean; bell: boolean },
+  now = new Date(),
+): Promise<boolean> {
+  const copy = { notificationChannels: { ...channels, checkedAt: now }, updatedAt: now };
+  const kept = await userSettingsCollection.updateOne(
+    { userId, notificationsDeletedAt: { $exists: false } },
+    { $set: copy },
+  );
+  if (kept.matchedCount === 1) return true;
+  // No record yet, or a deleted account's: a new record only if there's none.
+  const made = await userSettingsCollection.updateOne(
+    { userId },
+    { $setOnInsert: { userId, createdAt: now, ...copy } },
+    { upsert: true },
+  );
+  return made.upsertedCount === 1;
+}
+
 // ------------------------------------------------------------ derivation ----
 
 export interface NotificationContext {
@@ -144,10 +178,48 @@ export interface NotificationContext {
   now: Date;
   timeZone: string;
   prefs: NotificationPreferences;
-  /** Whether the person has ever saved their notification preferences. */
-  prefsSaved: boolean;
+  /** EisenQ's copy of Socle's email and bell switches, if Socle ever answered. */
+  channels?: UserSettings["notificationChannels"];
   /** The daily email's sent-today record, for the latest day it ran. */
   digest?: DigestRecord;
+  /** When the daily job first found no such account in Clerk. */
+  clerkMissingSince?: Date;
+}
+
+/** The fields of a person's UserSettings the notifications read. */
+export const CONTEXT_PROJECTION = {
+  userId: 1,
+  notifications: 1,
+  notificationChannels: 1,
+  notificationDigest: 1,
+  clerkMissingSince: 1,
+  "mcp.preferences.timeZone": 1,
+} as const;
+
+export type ContextDoc = Pick<
+  UserSettings,
+  | "notifications"
+  | "notificationChannels"
+  | "notificationDigest"
+  | "clerkMissingSince"
+  | "mcp"
+>;
+
+/** The context from a UserSettings document already read (the daily job's pages). */
+export function contextFrom(
+  userId: string,
+  doc: Partial<ContextDoc> | null | undefined,
+  now: Date,
+): NotificationContext {
+  return {
+    userId,
+    now,
+    timeZone: normalizeMcpSettings(doc?.mcp).preferences.timeZone,
+    prefs: normalizePreferences(doc?.notifications, doc?.notificationChannels),
+    ...(doc?.notificationChannels ? { channels: doc.notificationChannels } : {}),
+    ...(doc?.notificationDigest ? { digest: doc.notificationDigest } : {}),
+    ...(doc?.clerkMissingSince ? { clerkMissingSince: doc.clerkMissingSince } : {}),
+  };
 }
 
 /** The person's preferences and zone (UserSettings.mcp.preferences.timeZone, else UTC). */
@@ -157,22 +229,9 @@ export async function loadContext(
 ): Promise<NotificationContext> {
   const doc = await userSettingsCollection.findOne(
     { userId },
-    {
-      projection: {
-        notifications: 1,
-        notificationDigest: 1,
-        "mcp.preferences.timeZone": 1,
-      },
-    },
+    { projection: CONTEXT_PROJECTION },
   );
-  return {
-    userId,
-    now,
-    timeZone: normalizeMcpSettings(doc?.mcp).preferences.timeZone,
-    prefs: normalizePreferences(doc?.notifications),
-    prefsSaved: doc?.notifications !== undefined,
-    ...(doc?.notificationDigest ? { digest: doc.notificationDigest } : {}),
-  };
+  return contextFrom(userId, doc, now);
 }
 
 /**

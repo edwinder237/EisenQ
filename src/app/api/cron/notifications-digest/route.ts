@@ -3,11 +3,12 @@ import { NextResponse } from "next/server";
 import { env } from "~/env";
 import { logNotifications } from "~/server/notification-access";
 import { runDigests } from "~/server/notification-digest";
-import { createSocleClient, socleConfig } from "~/server/socle";
+import { socleClient } from "~/server/socle";
 
-// GET /api/cron/notifications-digest — the daily notifications email
-// (vercel.json: every 15 minutes). Each run sends the digest to whoever's
-// digest.sendAt has come in their own time zone, once per local day. Vercel
+// GET /api/cron/notifications-digest — the daily summary (vercel.json: every
+// 15 minutes). Each run sends it to every account whose digest.sendAt has come
+// in its own time zone, once per local day, and retries Socle for deleted
+// accounts it hasn't confirmed yet. Vercel
 // calls it on Production with "Authorization: Bearer <CRON_SECRET>", for the
 // schedule and for a run by hand from the dashboard (Settings → Cron Jobs).
 //
@@ -48,10 +49,7 @@ export async function GET(request: Request) {
     );
   }
   try {
-    const config = socleConfig();
-    const summary = await runDigests({
-      socle: config ? createSocleClient(config) : null,
-    });
+    const summary = await runDigests({ socle: socleClient() });
     return NextResponse.json(summary, { headers: NO_STORE });
   } catch (err) {
     // The error's name only: a driver's message can quote a connection string.

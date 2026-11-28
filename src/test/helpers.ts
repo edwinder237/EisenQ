@@ -7,35 +7,50 @@ import { userSettingsCollection } from "~/test/fake-db";
 export const OWNER = "user_2ownerOwnerOwner00001";
 export const OTHER = "user_2otherOtherOther00002";
 export const OWNER_EMAIL = "owner@example.com";
+export const OTHER_EMAIL = "other@example.com";
 export const TZ = "America/Toronto";
 
-/** EisenQ's Clerk, stubbed: the owner is the oldest account. */
+/** The made-up address of any test account: owner@, other@, else <id>@example.com. */
+export function emailOf(id: string): string {
+  if (id === OWNER) return OWNER_EMAIL;
+  if (id === OTHER) return OTHER_EMAIL;
+  return `${id.toLowerCase()}@example.com`;
+}
+
+/**
+ * EisenQ's Clerk, stubbed. Every account has its own primary email, verified
+ * unless listed in `unverified`; `email: null` gives none at all. Accounts in
+ * `gone` were deleted: Clerk answers 404, as its SDK throws it.
+ */
 export function fakeClerk(
   opts: {
-    owner?: string | null;
     email?: string | null;
     locale?: string | null;
+    unverified?: string[];
+    gone?: string[];
   } = {},
 ) {
-  const owner = opts.owner === undefined ? OWNER : opts.owner;
   return {
     users: {
-      getUserList: vi.fn(async () => ({
-        data: owner ? [{ id: owner }] : [],
-        totalCount: owner ? 1 : 0,
-      })),
-      getUser: vi.fn(async (id: string) => ({
+      getUser: vi.fn(async (id: string) => {
+        if (opts.gone?.includes(id))
+          throw Object.assign(new Error("Not Found"), { clerkError: true, status: 404 });
+        return {
         id,
         primaryEmailAddress:
           opts.email === null
             ? null
             : {
-                emailAddress:
-                  opts.email ??
-                  (id === OWNER ? OWNER_EMAIL : "other@example.com"),
+                emailAddress: opts.email ?? emailOf(id),
+                verification: {
+                  status: opts.unverified?.includes(id)
+                    ? "unverified"
+                    : "verified",
+                },
               },
         locale: opts.locale === undefined ? "fr-CA" : opts.locale,
-      })),
+        };
+      }),
     },
   };
 }

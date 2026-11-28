@@ -20,6 +20,9 @@ export const env = createEnv({
     SOCLE_API_URL: z.string().url().optional(),
     SOCLE_API_KEY: z.string().optional(),
     CRON_SECRET: z.string().optional(),
+    // The signing secret of EisenQ's Clerk webhook for "user.deleted"
+    // (POST /api/webhooks/clerk). Optional: without it the route answers 404.
+    CLERK_WEBHOOK_SIGNING_SECRET: z.string().optional(),
   },
 
   /**
@@ -42,6 +45,7 @@ export const env = createEnv({
     SOCLE_API_URL: process.env.SOCLE_API_URL,
     SOCLE_API_KEY: process.env.SOCLE_API_KEY,
     CRON_SECRET: process.env.CRON_SECRET,
+    CLERK_WEBHOOK_SIGNING_SECRET: process.env.CLERK_WEBHOOK_SIGNING_SECRET,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
   /**
