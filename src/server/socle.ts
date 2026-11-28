@@ -116,6 +116,9 @@ export type BellSessionResult =
 export type ChoicesResult = { kind: "ok"; choices: SocleChoices } | SocleFailure;
 export type DeleteResult = { kind: "deleted" } | SocleFailure;
 
+/** A shorter timeout than the usual 10 seconds, such as what's left of a cron run. */
+export type CallOptions = { timeoutMs?: number };
+
 // Socle checks each count is a whole number up to 999.
 export const MAX_COUNT = 999;
 const clamp = (n: number) => Math.min(MAX_COUNT, Math.max(0, Math.floor(n)));
@@ -207,6 +210,7 @@ export function createSocleClient(
     path: string,
     body: unknown,
     headers: Record<string, string> = {},
+    timeoutMs = TIMEOUT_MS,
   ) =>
     fetchImpl(`${config.apiUrl}/v1/notifications${path}`, {
       method,
@@ -220,7 +224,9 @@ export function createSocleClient(
       cache: "no-store",
       // Never follow a redirect with the key.
       redirect: "error",
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(
+        Math.max(1, Math.min(TIMEOUT_MS, Math.floor(timeoutMs))),
+      ),
     });
 
   const readChoices = async (res: Response): Promise<ChoicesResult> => {
@@ -235,7 +241,10 @@ export function createSocleClient(
      * each capped at 999: never a title, a date, a time zone or an ID. The
      * address goes only when the caller includes it (the person has email on).
      */
-    async sendDigestEvent(event: DigestEvent): Promise<SendResult> {
+    async sendDigestEvent(
+      event: DigestEvent,
+      opts: CallOptions = {},
+    ): Promise<SendResult> {
       const { id, email, locale } = event.recipient;
       const { dueCount, comingUpCount, missedRoutinesCount, isTest } =
         event.counts;
@@ -254,9 +263,13 @@ export function createSocleClient(
         },
       };
       try {
-        const res = await call("POST", "/events", body, {
-          "Idempotency-Key": event.idempotencyKey,
-        });
+        const res = await call(
+          "POST",
+          "/events",
+          body,
+          { "Idempotency-Key": event.idempotencyKey },
+          opts.timeoutMs,
+        );
         if (res.status === 202) {
           const accepted = (await res.json().catch(() => ({}))) as {
             eventId?: unknown;
@@ -311,10 +324,19 @@ export function createSocleClient(
     },
 
     /** The person's email and bell, as Socle holds them. */
-    async lookupPreferences(recipientId: string): Promise<ChoicesResult> {
+    async lookupPreferences(
+      recipientId: string,
+      opts: CallOptions = {},
+    ): Promise<ChoicesResult> {
       try {
         return await readChoices(
-          await call("POST", "/preferences/lookup", { recipientId }),
+          await call(
+            "POST",
+            "/preferences/lookup",
+            { recipientId },
+            {},
+            opts.timeoutMs,
+          ),
         );
       } catch (err) {
         return unreachable(err);
@@ -339,9 +361,18 @@ export function createSocleClient(
     },
 
     /** A deleted account: Socle deletes its stored choices and everything at delivery. 204 even when nothing was there. */
-    async deleteRecipient(recipientId: string): Promise<DeleteResult> {
+    async deleteRecipient(
+      recipientId: string,
+      opts: CallOptions = {},
+    ): Promise<DeleteResult> {
       try {
-        const res = await call("POST", "/recipients/delete", { recipientId });
+        const res = await call(
+          "POST",
+          "/recipients/delete",
+          { recipientId },
+          {},
+          opts.timeoutMs,
+        );
         if (res.status === 204) return { kind: "deleted" };
         return await problemFrom(res);
       } catch (err) {

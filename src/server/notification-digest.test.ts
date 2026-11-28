@@ -6,9 +6,12 @@ import {
 } from "~/lib/notifications/types";
 import type * as McpSettingsModule from "~/server/mcp-settings";
 import {
+  RUN_BUDGET_MS,
+  RUN_DEADLINE_MS,
   runDigests,
   sendTestDigest,
 } from "~/server/notification-digest";
+import { createSocleClient } from "~/server/socle";
 import { clearNotificationData } from "~/server/notification-deletion";
 import {
   applyAction,
@@ -562,6 +565,76 @@ describe("the daily summary, for every account", () => {
     expect(socle.events().map((e) => e.recipient.id).sort()).toEqual(
       [OWNER, BAD, OTHER].sort(),
     );
+  });
+
+  describe("one deadline for the whole run", () => {
+    const clock = { t: 0 };
+    const elapsed = () => clock.t;
+    beforeEach(() => {
+      clock.t = 0;
+    });
+
+    it("a Clerk call that hangs is cut off by the time left, and the day stays open", async () => {
+      await seedDay();
+      const started = performance.now();
+      const result = await run(AT_SEVEN, {
+        elapsed,
+        addressFor: () => {
+          clock.t = RUN_DEADLINE_MS - 300;
+          return new Promise<never>(() => undefined);
+        },
+      });
+      expect(performance.now() - started).toBeLessThan(3000);
+      expect(result).toMatchObject({ status: "done", outcomes: { unavailable: 1 } });
+      expect((await record(OWNER))?.status).toBe("pending");
+      expect(socle.calls).toEqual([]);
+    });
+
+    it("a Socle call that hangs is aborted when the run's time is up", async () => {
+      await seedDay();
+      const stalled = vi.fn(
+        (_url: string | URL | Request, init?: RequestInit) =>
+          new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason as Error));
+          }),
+      );
+      const started = performance.now();
+      const result = await runDigests({
+        socle: createSocleClient({ apiUrl: "https://socle.test", apiKey: "k" }, stalled),
+        now: AT_SEVEN,
+        sleep: noWait,
+        elapsed,
+        addressFor: async () => {
+          clock.t = RUN_DEADLINE_MS - 600;
+          return { kind: "verified", email: OWNER_EMAIL };
+        },
+      });
+      expect(performance.now() - started).toBeLessThan(3000);
+      expect(stalled).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ outcomes: { unavailable: 1 } });
+      expect((await record(OWNER))?.status).toBe("pending");
+    });
+
+    it("starts no call with under half a second left, and nobody new after the start budget", async () => {
+      await seedDay();
+      expect(
+        await run(AT_SEVEN, {
+          elapsed,
+          addressFor: async () => {
+            clock.t = RUN_DEADLINE_MS - 100;
+            return { kind: "verified", email: OWNER_EMAIL };
+          },
+        }),
+      ).toMatchObject({ outcomes: { unavailable: 1 } });
+      expect(socle.calls).toEqual([]);
+      expect(logs.join("\n")).toContain('"event":"digest_out_of_time"');
+
+      clock.t = RUN_BUDGET_MS + 1;
+      expect(await run(new Date("2026-11-27T12:20:00Z"), { elapsed })).toMatchObject({
+        scanned: 0,
+        capped: true,
+      });
+    });
   });
 
   it("still counts a task created over MCP, for the account that created it", async () => {

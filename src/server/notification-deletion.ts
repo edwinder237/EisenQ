@@ -89,8 +89,11 @@ export async function deleteNotificationsFor(
 export async function retryPendingDeletions(
   socle: SocleClient,
   now = new Date(),
-  max = MAX_DELETIONS_PER_RUN,
+  opts: { max?: number; left?: () => number } = {},
 ): Promise<{ done: number; pending: number }> {
+  const max = opts.max ?? MAX_DELETIONS_PER_RUN;
+  // The time this part of the run may still use; each call gets no more.
+  const left = opts.left ?? (() => Infinity);
   const waiting = await notificationDeletionsCollection
     .find({})
     .sort({ since: 1 })
@@ -98,7 +101,8 @@ export async function retryPendingDeletions(
     .toArray();
   let done = 0;
   for (const { userId } of waiting) {
-    const result = await socle.deleteRecipient(userId);
+    if (left() < 500) break;
+    const result = await socle.deleteRecipient(userId, { timeoutMs: left() });
     if (result.kind !== "deleted") {
       await keepPending(userId, now);
       break;

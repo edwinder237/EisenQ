@@ -54,11 +54,18 @@ const CATCH_UP_MINUTES = 120; // a missed or failed run is retried until sendAt 
 const MAX_RETRY_WAIT_MS = 5_000;
 const STALE_CLAIM_MS = 10 * 60_000; // a run that died mid-send frees the day after this
 // Accounts are read 100 at a time, in _id order. A run calls Socle for at most
-// 50 people and starts nobody new after 40 seconds (maxDuration is 60): the
-// rest are reached by the next runs, inside the 2-hour catch-up window.
+// 50 people and starts nobody new after 30 seconds; the rest are reached by
+// the next runs, inside the 2-hour catch-up window. Every call of a run, to
+// Socle or Clerk, ends by its 50-second deadline (maxDuration is 60): each is
+// given only the time left, and none starts with less than half a second.
 export const PAGE_SIZE = 100;
 export const MAX_PEOPLE_PER_RUN = 50;
-export const RUN_BUDGET_MS = 40_000;
+export const RUN_BUDGET_MS = 30_000;
+export const RUN_DEADLINE_MS = 50_000;
+// Deleted accounts' retries take at most the run's first 10 seconds.
+export const DELETIONS_BUDGET_MS = 10_000;
+const CLERK_TIMEOUT_MS = 5_000;
+const MIN_CALL_MS = 500;
 const FINAL: ReadonlySet<DigestRecord["status"]> = new Set([
   "sent",
   "empty",
@@ -182,6 +189,26 @@ export interface DigestRunOptions {
   elapsed?: () => number;
 }
 
+/** What one person's summary may use: the hooks, and the time left in the run. */
+type PersonOptions = Pick<DigestRunOptions, "addressFor" | "sleep"> & {
+  left: () => number;
+};
+
+class OutOfTime extends Error {
+  override name = "TimeoutError";
+}
+
+/** The promise, or a TimeoutError after `ms`. For Clerk's SDK, which takes no timeout of its own. */
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new OutOfTime()), Math.max(0, ms));
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Takes today's sent-today record for this run: a new one with a new random
  * key, or today's unfinished one with its own key. null when it's already
@@ -241,7 +268,7 @@ type PersonResult = { outcome: DigestOutcome; calledSocle: boolean };
 async function digestFor(
   ctx: NotificationContext,
   socle: SocleClient,
-  opts: Pick<DigestRunOptions, "addressFor" | "sleep">,
+  opts: PersonOptions,
 ): Promise<PersonResult> {
   const { userId, now } = ctx;
   const done = (outcome: DigestOutcome, calledSocle = false) => ({
@@ -298,10 +325,16 @@ type Claimed = {
 async function sendClaimed(
   ctx: NotificationContext,
   socle: SocleClient,
-  opts: Pick<DigestRunOptions, "addressFor" | "sleep">,
+  opts: PersonOptions,
   { key, settle, done }: Claimed,
 ): Promise<PersonResult> {
   const { userId, now } = ctx;
+  // Out of run time before a call: the day stays open, same key, for the next run.
+  const outOfTime = async (calledSocle: boolean) => {
+    logNotifications("warn", "digest_out_of_time");
+    await settle("pending");
+    return done("unavailable", calledSocle);
+  };
   const counts = digestCounts(
     await currentNotifications(ctx, emailPreferences(ctx.prefs)),
     false,
@@ -316,9 +349,13 @@ async function sendClaimed(
   // per send, which also gives the address. An account deleted in Clerk
   // whose event EisenQ missed would otherwise read as "bell on" (no copy)
   // and reach Socle every day (legal's deletion rule).
+  if (opts.left() < MIN_CALL_MS) return outOfTime(false);
   let address: AccountAddress;
   try {
-    address = await (opts.addressFor ?? accountAddressFor)(userId);
+    address = await withTimeout(
+      (opts.addressFor ?? accountAddressFor)(userId),
+      Math.min(CLERK_TIMEOUT_MS, opts.left()),
+    );
   } catch {
     logNotifications("warn", "digest_address_unavailable");
     await settle("pending");
@@ -332,7 +369,8 @@ async function sendClaimed(
   }
 
   // The person's switches, as Socle holds them now.
-  const looked = await socle.lookupPreferences(userId);
+  if (opts.left() < MIN_CALL_MS) return outOfTime(false);
+  const looked = await socle.lookupPreferences(userId, { timeoutMs: opts.left() });
   if (looked.kind !== "ok") {
     logRefusal("digest_preferences_unavailable", looked);
     await settle("pending");
@@ -364,14 +402,17 @@ async function sendClaimed(
   }
 
   const event = { idempotencyKey: key, recipient, counts };
-  let result = await socle.sendDigestEvent(event);
+  if (opts.left() < MIN_CALL_MS) return outOfTime(true);
+  let result = await socle.sendDigestEvent(event, { timeoutMs: opts.left() });
   if (retryable(result)) {
     const waitS =
       result.kind === "problem" ? (result.retryAfterSeconds ?? 1) : 1;
-    await (opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(
-      Math.min(waitS * 1000, MAX_RETRY_WAIT_MS),
-    );
-    result = await socle.sendDigestEvent(event);
+    const waitMs = Math.min(waitS * 1000, MAX_RETRY_WAIT_MS);
+    // Again in this run only if the wait and the call fit before the deadline.
+    if (opts.left() >= waitMs + MIN_CALL_MS) {
+      await (opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms))))(waitMs);
+      result = await socle.sendDigestEvent(event, { timeoutMs: opts.left() });
+    }
   }
 
   if (result.kind === "accepted") {
@@ -446,9 +487,14 @@ export async function runDigests(
 
   const socle = opts.socle;
   if (!socle) return finish({ status: "off", reason: "socle-not-configured" });
+  const left = () => Math.max(0, RUN_DEADLINE_MS - elapsed());
+  const person: PersonOptions = { ...opts, left };
 
-  // Deleted accounts Socle hasn't confirmed yet go first (legal's deletion rule).
-  const deletions = await retryPendingDeletions(socle, now);
+  // Deleted accounts Socle hasn't confirmed yet go first (legal's deletion
+  // rule), in the run's first seconds only.
+  const deletions = await retryPendingDeletions(socle, now, {
+    left: () => Math.max(0, Math.min(left(), DELETIONS_BUDGET_MS - elapsed())),
+  });
 
   const outcomes: Partial<Record<DigestOutcome, number>> = {};
   let scanned = 0;
@@ -482,7 +528,7 @@ export async function runDigests(
       scanned++;
       let result: PersonResult;
       try {
-        result = await digestFor(contextFrom(doc.userId, doc, now), socle, opts);
+        result = await digestFor(contextFrom(doc.userId, doc, now), socle, person);
       } catch (err) {
         // Before their day was claimed (reading or claiming it): nothing to
         // settle, and the next run tries them again.
@@ -565,7 +611,10 @@ export async function sendTestDigest(
 
   let address: AccountAddress;
   try {
-    address = await (opts.addressFor ?? accountAddressFor)(userId);
+    address = await withTimeout(
+      (opts.addressFor ?? accountAddressFor)(userId),
+      CLERK_TIMEOUT_MS,
+    );
   } catch {
     throw new NotificationError(
       "Couldn't check your account's email address. Try again.",
