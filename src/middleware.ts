@@ -29,6 +29,10 @@ const isPublicRoute = createRouteMatcher([
   // CRON_SECRET, not the Clerk cookie, and the handler checks it before
   // anything else. Exact path.
   "/api/cron/notifications-digest",
+  // Clerk's "user.deleted" event. Clerk signs it, without a session, and the
+  // handler checks the signature (CLERK_WEBHOOK_SIGNING_SECRET) before
+  // anything else. Exact path.
+  "/api/webhooks/clerk",
   // RFC 9728 metadata telling those apps where to sign in. Public by design.
   "/.well-known/oauth-protected-resource(.*)",
   // Clerk's authorization-server metadata, mirrored for older MCP clients.
