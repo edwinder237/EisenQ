@@ -13,7 +13,10 @@ import {
   logNotifications,
   type AccountAddress,
 } from "~/server/notification-access";
-import { retryPendingDeletions } from "~/server/notification-deletion";
+import {
+  deleteNotificationsFor,
+  retryPendingDeletions,
+} from "~/server/notification-deletion";
 import { channelsFrom } from "~/server/notification-preferences";
 import {
   CONTEXT_PROJECTION,
@@ -151,6 +154,7 @@ export type DigestOutcome =
   | "opted-out" // email and bell both off in Socle: nothing sent
   | "no-email" // email on, but no verified address: nothing sent
   | "refused" // Socle refused it: not retried today
+  | "account-deleted" // gone from Clerk: deleted here and in Socle instead
   | "unavailable"; // Socle or Clerk unreachable: the next run retries, same key
 
 export interface DigestRunSummary {
@@ -308,6 +312,25 @@ async function sendClaimed(
     return done("empty");
   }
 
+  // The account must still exist, whatever goes: one Clerk call per person
+  // per send, which also gives the address. An account deleted in Clerk
+  // whose event EisenQ missed would otherwise read as "bell on" (no copy)
+  // and reach Socle every day (legal's deletion rule).
+  let address: AccountAddress;
+  try {
+    address = await (opts.addressFor ?? accountAddressFor)(userId);
+  } catch {
+    logNotifications("warn", "digest_address_unavailable");
+    await settle("pending");
+    return done("unavailable");
+  }
+  if (address.kind === "gone") {
+    logNotifications("info", "digest_account_gone");
+    // Clears the day's record too, and leaves both switches off.
+    await deleteNotificationsFor(userId, socle, now);
+    return done("account-deleted", true);
+  }
+
   // The person's switches, as Socle holds them now.
   const looked = await socle.lookupPreferences(userId);
   if (looked.kind !== "ok") {
@@ -327,14 +350,6 @@ async function sendClaimed(
     // Only the account's own primary email, once Clerk has verified it
     // (legal's A1). Without one nothing goes, not even the bell copy: Socle
     // refuses an event without an address while email is on.
-    let address: AccountAddress;
-    try {
-      address = await (opts.addressFor ?? accountAddressFor)(userId);
-    } catch {
-      logNotifications("warn", "digest_address_unavailable");
-      await settle("pending");
-      return done("unavailable", true);
-    }
     if (address.kind !== "verified") {
       logNotifications("info", "digest_skipped", {
         reason: address.kind === "unverified" ? "email-unverified" : "no-email",
@@ -559,7 +574,7 @@ export async function sendTestDigest(
       "Your account's email address isn't verified yet, so nothing was sent.",
       400,
     );
-  if (address.kind === "none")
+  if (address.kind !== "verified")
     throw new NotificationError("Your account has no email address.", 400);
 
   const ctx = await loadContext(userId, now);

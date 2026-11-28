@@ -13,6 +13,7 @@ import { applyAction, listNotifications } from "~/server/notification-service";
 import {
   checklistItemsCollection,
   maintenanceItemsCollection,
+  notificationStatesCollection,
   resetFakeDb,
   tasksCollection,
   userSettingsCollection,
@@ -246,8 +247,32 @@ describe("the daily summary, for every account", () => {
     const [event] = socle.events();
     expect(event!.recipient).toEqual({ id: OWNER });
     expect(event!.raw).not.toContain(OWNER_EMAIL);
-    // Clerk isn't even asked for the address.
-    expect(clerk.users.getUser).not.toHaveBeenCalled();
+    // Clerk is asked once, that the account still exists; its address stays out.
+    expect(clerk.users.getUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("an account deleted in Clerk without EisenQ hearing of it is deleted, not sent to", async () => {
+    // A settings row with no copy reads as "bell on".
+    const GONE = "user_2goneGoneGoneGone000005";
+    await seedSettings(GONE);
+    await overdueTask(GONE);
+    await notificationStatesCollection.insertOne({ userId: GONE, id: "task_overdue:x", readAt: AT_SEVEN, updatedAt: AT_SEVEN });
+    vi.mocked(clerkClient).mockResolvedValue(fakeClerk({ gone: [GONE] }) as never);
+
+    expect(await run()).toMatchObject({ outcomes: { "account-deleted": 1, empty: 1 } });
+    // Nothing reached Socle for them but the deletion.
+    expect(socle.calls.map((c) => [c.path, c.body.recipientId])).toEqual([
+      ["/recipients/delete", GONE],
+    ]);
+    expect(await notificationStatesCollection.countDocuments({ userId: GONE })).toBe(0);
+    const theirs = await userSettingsCollection.findOne({ userId: GONE });
+    expect(theirs?.notificationChannels).toMatchObject({ email: false, bell: false });
+    expect(theirs?.notificationDigest).toBeUndefined();
+
+    // From then on, they aren't read at all.
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
+    expect(socle.calls).toHaveLength(1);
+    expect(logs.join("\n")).not.toContain(GONE);
   });
 
   it("one that turned email off from an email's link gets no email the next day", async () => {

@@ -31,18 +31,33 @@ export function localeFrom(
  * The account's address, at send time, from EisenQ's Clerk:
  * - verified: its primary email, which Clerk has verified, and its language;
  * - unverified: it has a primary email, not verified, so nothing is sent;
- * - none: no primary email.
+ * - none: no primary email;
+ * - gone: Clerk has no such account any more (deleted, and EisenQ missed
+ *   the event), so its notifications are deleted.
  * Never stored, and never logged.
  */
 export type AccountAddress =
   | { kind: "verified"; email: string; locale?: "fr" | "en" }
   | { kind: "unverified" }
-  | { kind: "none" };
+  | { kind: "none" }
+  | { kind: "gone" };
+
+/** Clerk's answer for an account it doesn't have: a ClerkAPIResponseError with status 404. */
+export function isClerkNotFound(err: unknown): boolean {
+  const e = err as { clerkError?: unknown; status?: unknown } | null;
+  return typeof e === "object" && e !== null && e.clerkError === true && e.status === 404;
+}
 
 export async function accountAddressFor(
   userId: string,
 ): Promise<AccountAddress> {
-  const user = await (await clerkClient()).users.getUser(userId);
+  let user: Awaited<ReturnType<Awaited<ReturnType<typeof clerkClient>>["users"]["getUser"]>>;
+  try {
+    user = await (await clerkClient()).users.getUser(userId);
+  } catch (err) {
+    if (isClerkNotFound(err)) return { kind: "gone" };
+    throw err;
+  }
   const primary = user.primaryEmailAddress;
   if (!primary?.emailAddress) return { kind: "none" };
   if (primary.verification?.status !== "verified")

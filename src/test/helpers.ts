@@ -19,18 +19,23 @@ export function emailOf(id: string): string {
 
 /**
  * EisenQ's Clerk, stubbed. Every account has its own primary email, verified
- * unless listed in `unverified`; `email: null` gives none at all.
+ * unless listed in `unverified`; `email: null` gives none at all. Accounts in
+ * `gone` were deleted: Clerk answers 404, as its SDK throws it.
  */
 export function fakeClerk(
   opts: {
     email?: string | null;
     locale?: string | null;
     unverified?: string[];
+    gone?: string[];
   } = {},
 ) {
   return {
     users: {
-      getUser: vi.fn(async (id: string) => ({
+      getUser: vi.fn(async (id: string) => {
+        if (opts.gone?.includes(id))
+          throw Object.assign(new Error("Not Found"), { clerkError: true, status: 404 });
+        return {
         id,
         primaryEmailAddress:
           opts.email === null
@@ -44,7 +49,8 @@ export function fakeClerk(
                 },
               },
         locale: opts.locale === undefined ? "fr-CA" : opts.locale,
-      })),
+        };
+      }),
     },
   };
 }
