@@ -413,7 +413,8 @@ describe("the daily summary, for every account", () => {
       scanned: 0,
     });
 
-    // Socle gates too: its 409 is recorded as opted out, with nothing sent.
+    // Socle gates too: its 409 is recorded as opted out for the day, with
+    // nothing sent.
     await seedSettings(OTHER);
     await overdueTask(OTHER);
     socle.answerNext("/events", {
@@ -424,10 +425,25 @@ describe("the daily summary, for every account", () => {
       outcomes: { "opted-out": 1 },
     });
     expect((await record(OTHER))?.status).toBe("opted-out");
+  });
+
+  it("doesn't take Socle's 409 for the person's choices: the copy stays what Socle's look-up said, and they're read again", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
+      status: 409,
+      body: { type: "https://socle-services.app/problems/recipient-opted-out" },
+    });
+    expect(await run()).toMatchObject({ outcomes: { "opted-out": 1 } });
     expect(
-      (await userSettingsCollection.findOne({ userId: OTHER }))
+      (await userSettingsCollection.findOne({ userId: OWNER }))
         ?.notificationChannels,
-    ).toMatchObject({ email: false, bell: false });
+    ).toMatchObject({ email: true, bell: true });
+    // The next day they're still in the job, without opening Settings.
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({
+      scanned: 1,
+      outcomes: { sent: 1 },
+    });
   });
 
   it("an unverified email gets nothing, and the skip is logged with no address", async () => {
@@ -1038,6 +1054,24 @@ describe("Send a test", () => {
       }),
     ).resolves.toEqual({ sentTo: OWNER_EMAIL });
     expect(socle.events()).toHaveLength(5);
+  });
+
+  it("doesn't take Socle's 409 for the person's choices: the copy stays what Socle's look-up said", async () => {
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
+      status: 409,
+      body: { type: "https://socle-services.app/problems/recipient-opted-out" },
+    });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Your daily email is off, so nothing was sent.",
+    });
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: true, bell: true });
   });
 
   it("explains event-type-unknown", async () => {

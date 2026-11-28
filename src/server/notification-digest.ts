@@ -522,10 +522,10 @@ async function sendClaimed(
   }
   logRefusal("digest_refused", result);
   if (problem?.status === 409 && problem.type === "recipient-opted-out") {
+    // Nothing today. The copy stays what Socle's look-up said a moment ago:
+    // a send's answer doesn't say which switches are off, and the next
+    // look-up corrects it.
     await settleSent("opted-out");
-    await saveChannelsCopy(userId, { email: false, bell: false }, now).catch(
-      () => undefined,
-    );
     return done("opted-out", true);
   }
   if (
@@ -887,10 +887,9 @@ export async function sendTestDigest(
   }
 
   logRefusal("digest_test_refused", result);
+  // The copy stays what Socle's look-up said above: a send's answer doesn't
+  // say which switches are off.
   if (result.kind === "problem" && result.type === "recipient-opted-out") {
-    await saveChannelsCopy(userId, { email: false, bell: false }, now).catch(
-      () => undefined,
-    );
     throw new NotificationError(
       "Your daily email is off, so nothing was sent.",
       409,
