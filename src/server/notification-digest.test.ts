@@ -577,18 +577,20 @@ describe("the daily summary, for every account", () => {
     expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
   });
 
-  it("counts, without naming them, those the cap leaves whose window closes before the next run", async () => {
+  it("counts, without naming them, those with something to report whom the cap leaves past their window", async () => {
     const ids = [1, 2].map((n) => `user_2lateLateLate0000${n}`);
     await overdueTask(OWNER);
     for (const id of ids) {
       await seedSettings(id);
       await overdueTask(id);
     }
+    // And one with nothing to report: it misses nothing, so it isn't counted.
+    await seedSettings("user_2idleIdleIdle00003");
     // 08:50 in Toronto: 07:00's window closes at 09:00, before the 09:05 run.
     const late = await run(new Date("2026-11-27T13:50:00Z"), { maxPeople: 1 });
     expect(late).toMatchObject({ outcomes: { sent: 1 }, capped: true, windowMissed: 2 });
     const all = logs.join("\n");
-    expect(all).toContain('"event":"digest_window_missed","count":2');
+    expect(all).toContain('"event":"digest_window_missed","count":2,"complete":true');
     for (const id of ids) expect(all).not.toContain(id);
 
     // Earlier in the window the next run still reaches them: nothing counted.

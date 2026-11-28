@@ -585,16 +585,19 @@ export async function runDigests(
     missing.length > 0 ? await settleMissing(missing, socle, now, left) : undefined;
   const windowMissed = capped
     ? await countClosingWindows(after, now, pageSize, left)
-    : 0;
-  if (windowMissed > 0)
-    logNotifications("warn", "digest_window_missed", { count: windowMissed });
+    : { count: 0, complete: true };
+  if (windowMissed.count > 0)
+    logNotifications("warn", "digest_window_missed", {
+      count: windowMissed.count,
+      complete: windowMissed.complete,
+    });
   return finish({
     status: "done",
     scanned,
     outcomes,
     capped,
     deletions,
-    ...(capped ? { windowMissed } : {}),
+    ...(capped ? { windowMissed: windowMissed.count } : {}),
     ...(clerkMissing ? { clerkMissing } : {}),
   });
 }
@@ -655,19 +658,23 @@ const POPULATION = {
 
 /**
  * After a capped run, from where it stopped: people whose window is open now
- * and closed by the next run, with today not done. Database reads only, and
- * only while the run has time left. A count: never who.
+ * and closed by the next run, with today not done and something to report,
+ * so who get no summary today. Database reads only, and only while the run
+ * has time left: `complete` is false when it stopped early, and the count is
+ * then a floor. A count: never who.
  */
 async function countClosingWindows(
   after: ObjectId | undefined,
   now: Date,
   pageSize: number,
   left: () => number,
-): Promise<number> {
+): Promise<{ count: number; complete: boolean }> {
   const next = new Date(now.getTime() + RUN_EVERY_MS);
   let missed = 0;
   let cursor = after;
-  for (let pages = 0; pages < MISSED_SCAN_PAGES && left() >= 2_000; pages++) {
+  const enoughTime = () => left() >= 2_000;
+  for (let pages = 0; pages < MISSED_SCAN_PAGES; pages++) {
+    if (!enoughTime()) return { count: missed, complete: false };
     const page = await userSettingsCollection
       .find(
         { ...(cursor ? { _id: { $gt: cursor } } : {}), ...POPULATION },
@@ -683,11 +690,17 @@ async function countClosingWindows(
       if (!inSendWindow(sendAt, now, ctx.timeZone) || inSendWindow(sendAt, next, ctx.timeZone)) continue;
       const today = ymdInZone(now, ctx.timeZone);
       if (ctx.digest?.day === today && FINAL.has(ctx.digest.status)) continue;
-      missed++;
+      if (!enoughTime()) return { count: missed, complete: false };
+      // Only those who had something to report miss anything.
+      const counts = digestCounts(
+        await currentNotifications(ctx, emailPreferences(ctx.prefs)),
+        false,
+      );
+      if (!isEmpty(counts)) missed++;
     }
-    if (page.length < pageSize) break;
+    if (page.length < pageSize) return { count: missed, complete: true };
   }
-  return missed;
+  return { count: missed, complete: false };
 }
 
 // ------------------------------------------------------------- test email ---
