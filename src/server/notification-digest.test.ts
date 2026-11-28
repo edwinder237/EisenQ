@@ -4,14 +4,12 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   type NotificationPreferences,
 } from "~/lib/notifications/types";
-import { resetOwnerCache } from "~/server/notification-access";
+import type * as McpSettingsModule from "~/server/mcp-settings";
 import {
-  resetTestEmailLimit,
   runDigests,
   sendTestDigest,
 } from "~/server/notification-digest";
 import { applyAction, listNotifications } from "~/server/notification-service";
-import { createSocleClient } from "~/server/socle";
 import {
   checklistItemsCollection,
   maintenanceItemsCollection,
@@ -19,10 +17,13 @@ import {
   tasksCollection,
   userSettingsCollection,
 } from "~/test/fake-db";
+import { fakeSocle, type FakeSocle } from "~/test/fake-socle";
 import {
   OTHER,
+  OTHER_EMAIL,
   OWNER,
   OWNER_EMAIL,
+  emailOf,
   fakeClerk,
   json,
   seedSettings,
@@ -40,53 +41,51 @@ vi.mock("@clerk/nextjs/server", () => ({
   clerkClient: vi.fn(),
 }));
 vi.mock("~/env", () => ({ env: testEnv }));
+// The AI connector's bookkeeping is stubbed; the MCP handler, the add_task
+// tool and createTask are real.
+vi.mock("~/server/mcp-settings", async (importOriginal) => {
+  const actual = await importOriginal<typeof McpSettingsModule>();
+  return {
+    ...actual,
+    loadMcpSettings: vi.fn(async () => ({
+      mcp: actual.normalizeMcpSettings({
+        enabled: true,
+        preferences: {
+          ...actual.DEFAULT_MCP_PREFERENCES,
+          timeZone: "America/Toronto",
+        },
+      }),
+      autoArchiveCompleted: false,
+    })),
+    touchClient: vi.fn(
+      async (_u: string, _m: unknown, clientId: string, name?: string) => ({
+        clientId,
+        name: name ?? clientId,
+        firstSeenAt: new Date(),
+        lastUsedAt: new Date(),
+        blocked: false,
+      }),
+    ),
+    takeWriteSlot: vi.fn(async () => true),
+    logActivity: vi.fn(async () => undefined),
+  };
+});
 
 // Friday 2026-11-27, 07:05 in Toronto: just after the default 07:00.
 const AT_SEVEN = new Date("2026-11-27T12:05:00Z");
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const SAVED: NotificationPreferences = DEFAULT_NOTIFICATION_PREFERENCES;
-
-/** Socle, stubbed at the HTTP level: the real client builds the request. */
-function socleAnswering(...answers: { status: number; body?: unknown }[]) {
-  const queue = [...answers];
-  const fetchImpl = vi.fn(
-    async (_url: string | URL | Request, _init?: RequestInit) => {
-      const next = queue.shift() ?? { status: 202, body: {} };
-      return new Response(JSON.stringify(next.body ?? {}), {
-        status: next.status,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  );
-  return {
-    socle: createSocleClient(
-      { apiUrl: "https://socle.test", apiKey: "k" },
-      fetchImpl,
-    ),
-    fetchImpl,
-  };
-}
-const sentBodies = (f: ReturnType<typeof socleAnswering>["fetchImpl"]) =>
-  f.mock.calls.map(
-    ([, init]) =>
-      JSON.parse(init?.body as string) as { data: Record<string, unknown> },
-  );
-const sentKeys = (f: ReturnType<typeof socleAnswering>["fetchImpl"]) =>
-  f.mock.calls.map(([, init]) =>
-    new Headers(init?.headers).get("idempotency-key"),
-  );
-
-const owner = async () => OWNER;
 const noWait = async () => undefined;
 
-async function seedDay() {
+/** One overdue task, one due today, maintenance coming up, a missed routine. */
+async function seedDay(userId = OWNER) {
   await tasksCollection.insertOne({
     title: "File taxes",
     quadrant: "urgent-important",
     priority: "high",
     status: "pending",
-    userId: OWNER,
+    userId,
     dueDate: new Date("2026-11-25T14:00:00Z"),
     createdAt: new Date("2026-11-01T12:00:00Z"),
     updatedAt: new Date("2026-11-01T12:00:00Z"),
@@ -96,7 +95,7 @@ async function seedDay() {
     quadrant: "important-not-urgent",
     priority: "medium",
     status: "pending",
-    userId: OWNER,
+    userId,
     dueDate: new Date("2026-11-27T20:00:00Z"),
     createdAt: new Date("2026-11-01T12:00:00Z"),
     updatedAt: new Date("2026-11-01T12:00:00Z"),
@@ -105,7 +104,7 @@ async function seedDay() {
     title: "Furnace filter",
     intervalDays: 90,
     nextDueDate: "2026-11-28",
-    userId: OWNER,
+    userId,
     createdAt: AT_SEVEN,
     updatedAt: AT_SEVEN,
   });
@@ -115,18 +114,33 @@ async function seedDay() {
     daysOfWeek: [3],
     completedDates: [],
     sortOrder: 0,
-    userId: OWNER,
+    userId,
     createdAt: new Date("2026-11-20T12:00:00Z"),
     updatedAt: new Date("2026-11-20T12:00:00Z"),
   });
 }
 
+async function overdueTask(userId: string, title = "Overdue thing") {
+  await tasksCollection.insertOne({
+    title,
+    quadrant: "urgent-important",
+    priority: "high",
+    status: "pending",
+    userId,
+    dueDate: new Date("2026-11-25T14:00:00Z"),
+    createdAt: new Date("2026-11-01T12:00:00Z"),
+    updatedAt: new Date("2026-11-01T12:00:00Z"),
+  });
+}
+
+const record = async (userId: string) =>
+  (await userSettingsCollection.findOne({ userId }))?.notificationDigest;
+
+let socle: FakeSocle;
 let logs: string[];
 
 beforeEach(async () => {
   resetFakeDb();
-  resetOwnerCache();
-  resetTestEmailLimit();
   Object.assign(testEnv, {
     CRON_SECRET: undefined,
     SOCLE_API_URL: undefined,
@@ -137,6 +151,7 @@ beforeEach(async () => {
   vi.mocked(clerkClient).mockResolvedValue(fakeClerk() as never);
   vi.mocked(auth).mockResolvedValue({ userId: OWNER } as never);
   await seedSettings(OWNER, { notifications: SAVED });
+  socle = fakeSocle();
   logs = [];
   for (const level of ["info", "warn", "error", "log"] as const) {
     vi.spyOn(console, level).mockImplementation(
@@ -150,20 +165,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("the daily digest", () => {
-  it("sends counts only, once sendAt has come, to the owner's primary email", async () => {
+const run = (now = AT_SEVEN, extra: Partial<Parameters<typeof runDigests>[0]> = {}) =>
+  runDigests({ socle: socle.socle, now, sleep: noWait, ...extra });
+
+describe("the daily summary, for every account", () => {
+  it("sends counts only, once sendAt has come, to the account's own verified email", async () => {
     await seedDay();
-    const { socle, fetchImpl } = socleAnswering({
-      status: 202,
-      body: { eventId: "6f1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d" },
-    });
-    expect(await runDigests({ socle, now: AT_SEVEN, ownerId: owner })).toEqual({
+    socle.setChoices(OWNER, { email: true });
+    expect(await run()).toMatchObject({
       status: "done",
-      outcome: "sent",
+      scanned: 1,
+      outcomes: { sent: 1 },
+      capped: false,
     });
 
-    const [body] = sentBodies(fetchImpl);
-    expect(body).toEqual({
+    const [event] = socle.events();
+    expect(event).toMatchObject({
       eventType: "eisenq.digest.ready",
       recipient: { id: OWNER, email: OWNER_EMAIL, locale: "fr" },
       // Missed routines' email switch is off by default.
@@ -174,7 +191,6 @@ describe("the daily digest", () => {
         isTest: false,
       },
     });
-    const raw = fetchImpl.mock.calls[0]![1]?.body as string;
     for (const leak of [
       "File taxes",
       "Call the bank",
@@ -183,18 +199,120 @@ describe("the daily digest", () => {
       "07:00",
       "2026-11",
     ])
-      expect(raw).not.toContain(leak);
+      expect(event!.raw).not.toContain(leak);
 
+    // Socle was asked first, server to server, with the ID in the body.
+    expect(socle.calls.map((c) => c.path)).toEqual([
+      "/preferences/lookup",
+      "/events",
+    ]);
+    expect(socle.calls[0]!.body).toEqual({ recipientId: OWNER });
     // The key is the random UUID kept with today's sent-today record.
-    const record = (await userSettingsCollection.findOne({ userId: OWNER }))
-      ?.notificationDigest;
-    expect(record).toMatchObject({ day: "2026-11-27", status: "sent" });
-    expect(record?.key).toMatch(UUID);
-    expect(sentKeys(fetchImpl)).toEqual([record?.key]);
+    const today = await record(OWNER);
+    expect(today).toMatchObject({ day: "2026-11-27", status: "sent" });
+    expect(today?.key).toMatch(UUID);
+    expect(event!.key).toBe(today?.key);
+  });
+
+  it("a second account gets its own summary at its own email, with its own counts and key", async () => {
+    await seedDay(OWNER);
+    await seedSettings(OTHER);
+    await overdueTask(OTHER, "Their thing");
+    socle.setChoices(OWNER, { email: true });
+    socle.setChoices(OTHER, { email: true });
+
+    expect(await run()).toMatchObject({ scanned: 2, outcomes: { sent: 2 } });
+    const events = socle.events();
+    expect(events.map((e) => e.recipient)).toEqual([
+      { id: OWNER, email: OWNER_EMAIL, locale: "fr" },
+      { id: OTHER, email: OTHER_EMAIL, locale: "fr" },
+    ]);
+    expect(events.map((e) => e.data.dueCount)).toEqual([2, 1]);
+    expect(events[0]!.key).not.toBe(events[1]!.key);
+    expect(events[1]!.key).toBe((await record(OTHER))?.key);
+    // Each was asked about with its own ID only.
+    expect(socle.to("/preferences/lookup").map((c) => c.body)).toEqual([
+      { recipientId: OWNER },
+      { recipientId: OTHER },
+    ]);
+  });
+
+  it("an account with email off gets no email: its summary goes to the bell only, with no address", async () => {
+    await seedDay();
+    const clerk = fakeClerk();
+    vi.mocked(clerkClient).mockResolvedValue(clerk as never);
+    // Socle's default: email off, the bell on.
+    expect(await run()).toMatchObject({ outcomes: { sent: 1 } });
+    const [event] = socle.events();
+    expect(event!.recipient).toEqual({ id: OWNER });
+    expect(event!.raw).not.toContain(OWNER_EMAIL);
+    // Clerk isn't even asked for the address.
+    expect(clerk.users.getUser).not.toHaveBeenCalled();
+  });
+
+  it("one that turned email off from an email's link gets no email the next day", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    await run();
+    expect(socle.events()[0]!.recipient.email).toBe(OWNER_EMAIL);
+
+    // The footer link, in Socle: EisenQ's copy still says on.
+    socle.setChoices(OWNER, { email: false }, "unsubscribe_link");
+    await run(new Date("2026-11-28T12:05:00Z"));
+    expect(socle.events()[1]!.recipient).toEqual({ id: OWNER });
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: false, bell: true });
+  });
+
+  it("with email and the bell both off, sends nothing, and records Socle's own 409 the same way", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: false, bell: false });
+    expect(await run()).toMatchObject({ outcomes: { "opted-out": 1 } });
+    expect(socle.events()).toEqual([]);
+    expect((await record(OWNER))?.status).toBe("opted-out");
+
+    // The next day the copy says both off: the account isn't even read.
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({
+      scanned: 0,
+    });
+
+    // Socle gates too: its 409 is recorded as opted out, with nothing sent.
+    await seedSettings(OTHER);
+    await overdueTask(OTHER);
+    socle.answerNext("/events", {
+      status: 409,
+      body: { type: "https://socle-services.app/problems/recipient-opted-out" },
+    });
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({
+      outcomes: { "opted-out": 1 },
+    });
+    expect((await record(OTHER))?.status).toBe("opted-out");
+    expect(
+      (await userSettingsCollection.findOne({ userId: OTHER }))
+        ?.notificationChannels,
+    ).toMatchObject({ email: false, bell: false });
+  });
+
+  it("an unverified email gets nothing, and the skip is logged with no address", async () => {
+    await seedDay();
+    socle.setChoices(OWNER, { email: true });
+    vi.mocked(clerkClient).mockResolvedValue(
+      fakeClerk({ unverified: [OWNER] }) as never,
+    );
+    expect(await run()).toMatchObject({ outcomes: { "no-email": 1 } });
+    expect(socle.events()).toEqual([]);
+    expect((await record(OWNER))?.status).toBe("no-email");
+    const all = logs.join("\n");
+    expect(all).toContain('"event":"digest_skipped"');
+    expect(all).toContain('"reason":"email-unverified"');
+    for (const leak of [OWNER, OWNER_EMAIL]) expect(all).not.toContain(leak);
   });
 
   it("follows the email switches, not the in-app ones, and leaves hidden items out", async () => {
     await seedDay();
+    socle.setChoices(OWNER, { email: true });
     const prefs: NotificationPreferences = {
       ...SAVED,
       events: {
@@ -212,9 +330,8 @@ describe("the daily digest", () => {
     )!;
     await applyAction(OWNER, overdue.id, { action: "dismiss" }, AT_SEVEN);
 
-    const { socle, fetchImpl } = socleAnswering({ status: 202 });
-    await runDigests({ socle, now: AT_SEVEN, ownerId: owner });
-    expect(sentBodies(fetchImpl)[0]!.data).toEqual({
+    await run();
+    expect(socle.events()[0]!.data).toEqual({
       dueCount: 1,
       comingUpCount: 0,
       missedRoutinesCount: 1,
@@ -228,155 +345,180 @@ describe("the daily digest", () => {
     expect(kinds).not.toContain("routine_missed");
   });
 
-  it("sends nothing on an empty day", async () => {
-    const { socle, fetchImpl } = socleAnswering();
-    expect(await runDigests({ socle, now: AT_SEVEN, ownerId: owner })).toEqual({
-      status: "done",
-      outcome: "empty",
-    });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(
-      (await userSettingsCollection.findOne({ userId: OWNER }))
-        ?.notificationDigest?.status,
-    ).toBe("empty");
+  it("sends nothing on an empty day, and doesn't ask Socle", async () => {
+    expect(await run()).toMatchObject({ outcomes: { empty: 1 } });
+    expect(socle.calls).toEqual([]);
+    expect((await record(OWNER))?.status).toBe("empty");
   });
 
   it("sends nothing on a second run the same day, and again the next morning with a new key", async () => {
     await seedDay();
-    const { socle, fetchImpl } = socleAnswering();
-    await runDigests({ socle, now: AT_SEVEN, ownerId: owner });
-    const second = await runDigests({
-      socle,
-      now: new Date("2026-11-27T12:20:00Z"),
-      ownerId: owner,
+    await run();
+    expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+      outcomes: { "already-sent": 1 },
     });
-    expect(second).toEqual({ status: "done", outcome: "already-sent" });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(socle.events()).toHaveLength(1);
 
-    await runDigests({
-      socle,
-      now: new Date("2026-11-28T12:05:00Z"),
-      ownerId: owner,
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    const [first, next] = sentKeys(fetchImpl);
-    expect(next).not.toBe(first);
+    await run(new Date("2026-11-28T12:05:00Z"));
+    const [first, next] = socle.events();
+    expect(next!.key).not.toBe(first!.key);
   });
 
   it("waits for sendAt, in the person's zone, and catches up for two hours", async () => {
     await seedDay();
-    const { socle, fetchImpl } = socleAnswering();
     // 06:50 in Toronto is already 11:50 in UTC.
-    expect(
-      await runDigests({
-        socle,
-        now: new Date("2026-11-27T11:50:00Z"),
-        ownerId: owner,
-      }),
-    ).toEqual({ status: "done", outcome: "not-due" });
-    expect(
-      await runDigests({
-        socle,
-        now: new Date("2026-11-27T14:10:00Z"),
-        ownerId: owner,
-      }),
-    ).toEqual({ status: "done", outcome: "not-due" });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    expect(
-      await runDigests({
-        socle,
-        now: new Date("2026-11-27T13:40:00Z"),
-        ownerId: owner,
-      }),
-    ).toEqual({ status: "done", outcome: "sent" });
+    expect(await run(new Date("2026-11-27T11:50:00Z"))).toMatchObject({
+      outcomes: { "not-due": 1 },
+    });
+    expect(await run(new Date("2026-11-27T14:10:00Z"))).toMatchObject({
+      outcomes: { "not-due": 1 },
+    });
+    expect(socle.calls).toEqual([]);
+    expect(await run(new Date("2026-11-27T13:40:00Z"))).toMatchObject({
+      outcomes: { sent: 1 },
+    });
   });
 
   it("retries with the same key after Socle was unavailable", async () => {
     await seedDay();
-    const { socle, fetchImpl } = socleAnswering(
-      { status: 503 },
-      { status: 503 },
-      { status: 202 },
-    );
-    expect(
-      await runDigests({ socle, now: AT_SEVEN, ownerId: owner, sleep: noWait }),
-    ).toEqual({ status: "done", outcome: "unavailable" });
-    expect(
-      (await userSettingsCollection.findOne({ userId: OWNER }))
-        ?.notificationDigest?.status,
-    ).toBe("pending");
-    expect(
-      await runDigests({
-        socle,
-        now: new Date("2026-11-27T12:20:00Z"),
-        ownerId: owner,
-        sleep: noWait,
-      }),
-    ).toEqual({ status: "done", outcome: "sent" });
-    const keys = sentKeys(fetchImpl);
+    socle.answerNext("/events", { status: 503 }, { status: 503 });
+    expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+    expect((await record(OWNER))?.status).toBe("pending");
+    expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+      outcomes: { sent: 1 },
+    });
+    const keys = socle.events().map((e) => e.key);
     expect(keys).toHaveLength(3);
     expect(new Set(keys).size).toBe(1);
   });
 
+  it("retries the next run when Socle can't say what the person has on", async () => {
+    await seedDay();
+    socle.answerNext("/preferences/lookup", { status: 503 });
+    expect(await run()).toMatchObject({ outcomes: { unavailable: 1 } });
+    expect(socle.events()).toEqual([]);
+    expect(await run(new Date("2026-11-27T12:20:00Z"))).toMatchObject({
+      outcomes: { sent: 1 },
+    });
+  });
+
   it("handles event-type-unknown while Socle doesn't have the event yet: refused, not retried today", async () => {
     await seedDay();
-    const { socle, fetchImpl } = socleAnswering({
+    socle.answerNext("/events", {
       status: 422,
       body: { type: "https://socle-services.app/problems/event-type-unknown" },
     });
-    expect(await runDigests({ socle, now: AT_SEVEN, ownerId: owner })).toEqual({
-      status: "done",
-      outcome: "refused",
-    });
-    await runDigests({
-      socle,
-      now: new Date("2026-11-27T12:20:00Z"),
-      ownerId: owner,
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(await run()).toMatchObject({ outcomes: { refused: 1 } });
+    await run(new Date("2026-11-27T12:20:00Z"));
+    expect(socle.events()).toHaveLength(1);
   });
 
-  it("is opt-in, and only for the owner account", async () => {
-    await seedDay();
-    const { socle, fetchImpl } = socleAnswering();
-    // Never saved: the defaults say "on", but nothing is emailed until the person saves.
-    await userSettingsCollection.updateOne(
-      { userId: OWNER },
-      { $unset: { notifications: "" } },
-    );
-    expect(await runDigests({ socle, now: AT_SEVEN, ownerId: owner })).toEqual({
-      status: "done",
-      outcome: "digest-off",
+  it("pages through every account, stops at its cap, and the next run carries on", async () => {
+    const ids = [1, 2, 3, 4].map((n) => `user_2pagePagePage0000${n}`);
+    for (const id of [OWNER, ...ids]) {
+      if (id !== OWNER) await seedSettings(id);
+      await overdueTask(id);
+    }
+    const first = await run(AT_SEVEN, { pageSize: 2, maxPeople: 3 });
+    expect(first).toMatchObject({ scanned: 3, outcomes: { sent: 3 }, capped: true });
+    const second = await run(new Date("2026-11-27T12:20:00Z"), {
+      pageSize: 2,
+      maxPeople: 3,
     });
-    // Clerk names no owner: nobody.
+    expect(second).toMatchObject({
+      scanned: 5,
+      outcomes: { "already-sent": 3, sent: 2 },
+      capped: false,
+    });
+    expect(socle.events().map((e) => e.recipient.id).sort()).toEqual(
+      [OWNER, ...ids].sort(),
+    );
+    // And a run out of time starts nobody new.
     expect(
-      await runDigests({ socle, now: AT_SEVEN, ownerId: async () => null }),
-    ).toEqual({ status: "off", reason: "no-owner-account" });
-    // Someone else opted in, but they aren't the owner: never read, never sent.
-    await seedSettings(OTHER, { notifications: SAVED });
-    await runDigests({ socle, now: AT_SEVEN, ownerId: owner });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    // And without Socle's address and key, nothing runs.
+      await run(new Date("2026-11-28T12:05:00Z"), { elapsed: () => 60_000 }),
+    ).toMatchObject({ scanned: 0, capped: true });
+  });
+
+  it("still counts a task created over MCP, for the account that created it", async () => {
+    await seedSettings(OTHER);
+    socle.setChoices(OTHER, { email: true });
+    const { handleVerifiedMcpRequest } = await import("~/server/mcp-handler");
+    const res = await handleVerifiedMcpRequest(
+      new Request("https://www.eisenq.app/api/mcp", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "add_task",
+            arguments: {
+              title: "Renew passport",
+              quadrant: "Do First",
+              due: "2026-11-27T16:00",
+            },
+          },
+        }),
+      }),
+      {
+        token: "test",
+        clientId: "https://claude.ai/oauth/mcp-oauth-client-metadata",
+        scopes: [],
+        extra: {},
+      },
+      OTHER,
+    );
+    expect(res.status).toBe(200);
     expect(
-      await runDigests({ socle: null, now: AT_SEVEN, ownerId: owner }),
-    ).toEqual({ status: "off", reason: "socle-not-configured" });
+      (await tasksCollection.findOne({ userId: OTHER, title: "Renew passport" }))
+        ?.source,
+    ).toMatchObject({ kind: "agent" });
+
+    await run();
+    const theirs = socle.events().find((e) => e.recipient.id === OTHER);
+    expect(theirs).toMatchObject({
+      recipient: { id: OTHER, email: OTHER_EMAIL },
+      data: { dueCount: 1, comingUpCount: 0, missedRoutinesCount: 0 },
+    });
+    expect(theirs!.raw).not.toContain("Renew passport");
+    // The owner has nothing due: no summary for them.
+    expect(socle.events().some((e) => e.recipient.id === OWNER)).toBe(false);
+  });
+
+  it("is off without Socle's address and key", async () => {
+    await seedDay();
+    expect(await runDigests({ socle: null, now: AT_SEVEN })).toEqual({
+      status: "off",
+      reason: "socle-not-configured",
+    });
   });
 
   it("logs statuses and counts only", async () => {
     await seedDay();
-    const { socle } = socleAnswering({
+    await seedSettings(OTHER);
+    await overdueTask(OTHER);
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
       status: 422,
       body: {
         type: "https://socle-services.app/problems/data-invalid",
         detail: "x",
       },
     });
-    await runDigests({ socle, now: AT_SEVEN, ownerId: owner });
+    await run();
     const all = logs.join("\n");
     expect(all).toContain('"status":422');
+    expect(all).toContain('"event":"digest_run"');
     for (const leak of [
       OWNER,
+      OTHER,
       OWNER_EMAIL,
+      OTHER_EMAIL,
       "File taxes",
       "data-invalid",
       "Toronto",
@@ -386,17 +528,15 @@ describe("the daily digest", () => {
 });
 
 describe("Send a test", () => {
-  it("always sends, even on an empty day, marked as a test, to the account's own email", async () => {
-    const { socle, fetchImpl } = socleAnswering(
-      { status: 202 },
-      { status: 202 },
-    );
-    expect(await sendTestDigest(OWNER, { socle, ownerId: owner })).toEqual({
-      sentTo: OWNER_EMAIL,
+  it("any account with email on, to its own verified email, even on an empty day, marked as a test", async () => {
+    await seedSettings(OTHER);
+    socle.setChoices(OTHER, { email: true });
+    expect(await sendTestDigest(OTHER, { socle: socle.socle })).toEqual({
+      sentTo: OTHER_EMAIL,
     });
-    const [body] = sentBodies(fetchImpl);
-    expect(body).toMatchObject({
-      recipient: { id: OWNER, email: OWNER_EMAIL },
+    const [event] = socle.events();
+    expect(event).toMatchObject({
+      recipient: { id: OTHER, email: OTHER_EMAIL },
       data: {
         dueCount: 0,
         comingUpCount: 0,
@@ -405,44 +545,75 @@ describe("Send a test", () => {
       },
     });
     // Its own random key each time, never the day's record.
-    await sendTestDigest(OWNER, { socle, ownerId: owner });
-    const [a, b] = sentKeys(fetchImpl);
+    await sendTestDigest(OTHER, { socle: socle.socle });
+    const [a, b] = socle.events().map((e) => e.key);
     expect(a).toMatch(UUID);
     expect(b).not.toBe(a);
+    expect(await record(OTHER)).toBeUndefined();
+  });
+
+  it("works only while email is on in Socle", async () => {
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({
+      status: 409,
+      message: "Turn the daily email on and save first.",
+    });
+    expect(socle.events()).toEqual([]);
+  });
+
+  it("never goes to an unverified address", async () => {
+    socle.setChoices(OWNER, { email: true });
+    vi.mocked(clerkClient).mockResolvedValue(
+      fakeClerk({ unverified: [OWNER] }) as never,
+    );
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(socle.events()).toEqual([]);
+  });
+
+  it("allows three a day per person, counted in EisenQ's database", async () => {
+    await seedSettings(OTHER);
+    socle.setChoices(OWNER, { email: true });
+    socle.setChoices(OTHER, { email: true });
+    for (let i = 0; i < 3; i++)
+      await sendTestDigest(OWNER, { socle: socle.socle });
+    await expect(
+      sendTestDigest(OWNER, { socle: socle.socle }),
+    ).rejects.toMatchObject({ status: 429 });
     expect(
       (await userSettingsCollection.findOne({ userId: OWNER }))
-        ?.notificationDigest,
-    ).toBeUndefined();
-  });
-
-  it("allows three an hour", async () => {
-    const { socle } = socleAnswering();
-    for (let i = 0; i < 3; i++)
-      await sendTestDigest(OWNER, { socle, ownerId: owner });
+        ?.notificationTests,
+    ).toEqual({ day: "2026-11-27", count: 3 });
+    // Someone else's count is their own.
     await expect(
-      sendTestDigest(OWNER, { socle, ownerId: owner }),
+      sendTestDigest(OTHER, { socle: socle.socle }),
+    ).resolves.toEqual({ sentTo: emailOf(OTHER) });
+    // Late on the same local day, still three; after midnight in Toronto, again.
+    await expect(
+      sendTestDigest(OWNER, {
+        socle: socle.socle,
+        now: new Date("2026-11-28T04:30:00Z"),
+      }),
     ).rejects.toMatchObject({ status: 429 });
-    vi.setSystemTime(new Date(AT_SEVEN.getTime() + 61 * 60_000));
     await expect(
-      sendTestDigest(OWNER, { socle, ownerId: owner, now: new Date() }),
+      sendTestDigest(OWNER, {
+        socle: socle.socle,
+        now: new Date("2026-11-28T05:30:00Z"),
+      }),
     ).resolves.toEqual({ sentTo: OWNER_EMAIL });
-  });
-
-  it("is refused for anyone but the owner, without calling Socle", async () => {
-    const { socle, fetchImpl } = socleAnswering();
-    await expect(
-      sendTestDigest(OTHER, { socle, ownerId: owner }),
-    ).rejects.toMatchObject({ status: 403 });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(socle.events()).toHaveLength(5);
   });
 
   it("explains event-type-unknown", async () => {
-    const { socle } = socleAnswering({
+    socle.setChoices(OWNER, { email: true });
+    socle.answerNext("/events", {
       status: 422,
       body: { type: "https://socle-services.app/problems/event-type-unknown" },
     });
     await expect(
-      sendTestDigest(OWNER, { socle, ownerId: owner }),
+      sendTestDigest(OWNER, { socle: socle.socle }),
     ).rejects.toMatchObject({
       status: 503,
       message:
@@ -489,20 +660,24 @@ describe("GET /api/cron/notifications-digest", () => {
     expect(vi.mocked(fetch)).not.toHaveBeenCalled();
   });
 
-  it("with everything set, sends the owner's digest through Socle", async () => {
+  it("with everything set, sends each account's summary through Socle", async () => {
     await seedDay();
     Object.assign(testEnv, {
       CRON_SECRET: "a".repeat(48),
       SOCLE_API_URL: "https://socle.test",
       SOCLE_API_KEY: "k",
     });
-    vi.mocked(fetch).mockImplementation(
-      async () => new Response("{}", { status: 202 }),
-    );
+    socle.setChoices(OWNER, { email: true });
+    vi.stubGlobal("fetch", socle.fetchImpl);
     const res = await call(`Bearer ${"a".repeat(48)}`);
-    expect(await json(res)).toEqual({ status: "done", outcome: "sent" });
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
-    const [url] = vi.mocked(fetch).mock.calls[0]!;
-    expect(url).toBe("https://socle.test/v1/notifications/events");
+    expect(await json(res)).toMatchObject({
+      status: "done",
+      scanned: 1,
+      outcomes: { sent: 1 },
+    });
+    expect(socle.calls.map((c) => c.url)).toEqual([
+      "https://socle.test/v1/notifications/preferences/lookup",
+      "https://socle.test/v1/notifications/events",
+    ]);
   });
 });

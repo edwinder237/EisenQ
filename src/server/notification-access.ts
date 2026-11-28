@@ -1,62 +1,22 @@
 import "server-only";
 import { clerkClient } from "@clerk/nextjs/server";
-import type { SocleRecipient } from "~/server/socle";
 
-// Who may get notification emails through Socle, and where they go.
+// Where a person's notification email may go, and the notifications log.
 //
-// The bell is EisenQ's own and works for everyone. The daily email goes
-// through Socle, and legal's condition there is "Marc only" for now (Socle's
-// #50). EisenQ has no admin role or owner flag, and no environment variable
-// holds anyone's ID, so the owner is the first account created in EisenQ's own
-// Clerk application: the one that built the app. Only that account is emailed.
+// Every EisenQ account has its own bell, reminders, settings and daily email
+// (amended design record, edwinder237/socle,
+// docs/decisions/2026-11-27-eisenq-notifications-amended-design.md). Whether
+// email is on is Socle's to say. Where it goes is the account's own Clerk
+// primary email, and only once Clerk marks it verified (legal's A1): never an
+// address someone types in.
 
 // The same rule as Socle's recipient.id: 1 to 64 of A-Z, a-z, 0-9, _ and -.
 export const RECIPIENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-const OWNER_TTL_MS = 10 * 60_000;
-let ownerCache: { at: number; id: Promise<string | null> } | null = null;
-
-function errorNameOf(err: unknown): string {
+export function errorNameOf(err: unknown): string {
   return err instanceof Error && /^[A-Za-z]{1,64}$/.test(err.name)
     ? err.name
     : "Error";
-}
-
-async function lookUpOwner(): Promise<string | null> {
-  try {
-    const { data } = await (
-      await clerkClient()
-    ).users.getUserList({ orderBy: "+created_at", limit: 1 });
-    const id = data[0]?.id;
-    return id && RECIPIENT_ID.test(id) ? id : null;
-  } catch (err) {
-    // Fails closed: nobody is emailed until Clerk answers.
-    logNotifications("warn", "notifications_owner_lookup_failed", {
-      errorName: errorNameOf(err),
-    });
-    ownerCache = null;
-    return null;
-  }
-}
-
-/**
- * EisenQ's owner account: the oldest account in EisenQ's Clerk application.
- * Kept for 10 minutes in this server instance's memory only. Never stored or
- * logged.
- */
-export function eisenqOwnerId(
-  opts: { fresh?: boolean } = {},
-): Promise<string | null> {
-  const now = Date.now();
-  if (opts.fresh || !ownerCache || now - ownerCache.at > OWNER_TTL_MS) {
-    ownerCache = { at: now, id: lookUpOwner() };
-  }
-  return ownerCache.id;
-}
-
-/** For tests: forget the cached owner. */
-export function resetOwnerCache() {
-  ownerCache = null;
 }
 
 /** "fr-CA" → "fr", "en-US" → "en", anything else → nothing. */
@@ -67,23 +27,40 @@ export function localeFrom(
   return lang === "fr" || lang === "en" ? lang : undefined;
 }
 
-/** The person's primary email (and language, when known) from EisenQ's Clerk, at send time. */
-export async function clerkRecipientFor(
+/**
+ * The account's address, at send time, from EisenQ's Clerk:
+ * - verified: its primary email, which Clerk has verified, and its language;
+ * - unverified: it has a primary email, not verified, so nothing is sent;
+ * - none: no primary email.
+ * Never stored, and never logged.
+ */
+export type AccountAddress =
+  | { kind: "verified"; email: string; locale?: "fr" | "en" }
+  | { kind: "unverified" }
+  | { kind: "none" };
+
+export async function accountAddressFor(
   userId: string,
-): Promise<SocleRecipient | null> {
+): Promise<AccountAddress> {
   const user = await (await clerkClient()).users.getUser(userId);
-  const email = user.primaryEmailAddress?.emailAddress;
-  if (!email) return null;
+  const primary = user.primaryEmailAddress;
+  if (!primary?.emailAddress) return { kind: "none" };
+  if (primary.verification?.status !== "verified")
+    return { kind: "unverified" };
   const locale = localeFrom(user.locale);
-  return { id: userId, email, ...(locale ? { locale } : {}) };
+  return {
+    kind: "verified",
+    email: primary.emailAddress,
+    ...(locale ? { locale } : {}),
+  };
 }
 
-/** The address shown in Settings → Notifications, or undefined if Clerk can't say. */
-export async function clerkPrimaryEmail(
+/** For Settings → Notifications: the address, or why there is none. Undefined if Clerk can't say. */
+export async function settingsAddressFor(
   userId: string,
-): Promise<string | undefined> {
+): Promise<AccountAddress | undefined> {
   try {
-    return (await clerkRecipientFor(userId))?.email;
+    return await accountAddressFor(userId);
   } catch {
     return undefined;
   }
@@ -91,7 +68,7 @@ export async function clerkPrimaryEmail(
 
 // One JSON line per event, for Vercel's logs. Counts and statuses only, plus
 // Socle's eventId (legal, Socle's #50 and #52): never an email, a task title,
-// a user ID, a key, or anything else from Socle's answer.
+// a user ID, a key, a bell session, or anything else from Socle's answer.
 export type LogField = string | number | boolean | undefined;
 
 export function logNotifications(

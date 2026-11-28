@@ -34,7 +34,11 @@ export const preferencesSchema = z.object({
     enabled: z.boolean(),
     sendAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use HH:mm"),
     address: z.string().optional(), // ignored on write: always the account email
+    addressUnverified: z.boolean().optional(), // ignored on write
   }),
+  // Optional, so a page loaded before the bell switch existed can still save.
+  bell: z.object({ enabled: z.boolean() }).optional(),
+  channelsUnavailable: z.boolean().optional(), // ignored on write
 });
 
 /** PUT /api/notifications/reminders */

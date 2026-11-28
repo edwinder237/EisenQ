@@ -1,7 +1,8 @@
 // An in-memory stand-in for ~/server/db, for tests only. It implements the
 // MongoDB operations EisenQ's notification code and task service use, with
 // MongoDB's meaning: { field: null } matches null or missing, dot paths,
-// $ne / $in / $nin / $exists / $gt(e) / $lt(e) / $or / $and, and the updates
+// $ne / $in / $nin / $exists / $gt(e) / $lt(e) / $or / $and (ObjectIds compare
+// in creation order, as MongoDB's do), sort and limit, and the updates
 // $set / $unset / $setOnInsert / $inc with upsert. Projections are ignored.
 //
 // Use it with: vi.mock("~/server/db", () => import("~/test/fake-db"));
@@ -11,6 +12,7 @@ import type {
   ChecklistItem,
   Goal,
   MaintenanceItem,
+  NotificationDeletion,
   NotificationState,
   Task,
   UserSettings,
@@ -86,11 +88,18 @@ function same(a: unknown, b: unknown): boolean {
   return a === b;
 }
 
+function comparable(v: unknown): unknown {
+  if (v instanceof Date) return v.getTime();
+  // Same length, timestamp first: hex order is creation order.
+  if (v instanceof ObjectId) return v.toHexString();
+  return v;
+}
+
 function compare(a: unknown, b: unknown): number | null {
   if (a === undefined || a === null || b === undefined || b === null)
     return null;
-  const x = a instanceof Date ? a.getTime() : a;
-  const y = b instanceof Date ? b.getTime() : b;
+  const x = comparable(a);
+  const y = comparable(b);
   if (typeof x === "number" && typeof y === "number") return x - y;
   if (typeof x === "string" && typeof y === "string")
     return x < y ? -1 : x > y ? 1 : 0;
@@ -297,6 +306,9 @@ export const userSettingsCollection = new FakeCollection<Loose<UserSettings>>();
 export const notificationStatesCollection = new FakeCollection<
   Loose<NotificationState>
 >();
+export const notificationDeletionsCollection = new FakeCollection<
+  Loose<NotificationDeletion>
+>();
 export const db = {};
 export const client = {};
 
@@ -308,6 +320,7 @@ export function resetFakeDb() {
     maintenanceItemsCollection,
     userSettingsCollection,
     notificationStatesCollection,
+    notificationDeletionsCollection,
   ]) {
     c.docs = [];
   }

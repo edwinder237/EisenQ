@@ -21,7 +21,6 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "~/lib/notifications/types";
 import { completeTask } from "~/server/task-service";
 import type * as McpSettingsModule from "~/server/mcp-settings";
-import { resetOwnerCache } from "~/server/notification-access";
 import {
   checklistItemsCollection,
   maintenanceItemsCollection,
@@ -30,6 +29,7 @@ import {
   tasksCollection,
   userSettingsCollection,
 } from "~/test/fake-db";
+import { fakeSocle, type FakeSocle } from "~/test/fake-socle";
 import {
   OTHER,
   OWNER,
@@ -41,7 +41,13 @@ import {
   seedSettings,
 } from "~/test/helpers";
 
+const testEnv = vi.hoisted(() => ({
+  SOCLE_API_URL: "https://socle.test" as string | undefined,
+  SOCLE_API_KEY: "k" as string | undefined,
+}));
+
 vi.mock("~/server/db", () => import("~/test/fake-db"));
+vi.mock("~/env", () => ({ env: testEnv }));
 vi.mock("@clerk/nextjs/server", () => ({
   auth: vi.fn(),
   clerkClient: vi.fn(),
@@ -107,9 +113,14 @@ async function act(id: string, body: unknown) {
   );
 }
 
+let socle: FakeSocle;
+
 beforeEach(async () => {
   resetFakeDb();
-  resetOwnerCache();
+  Object.assign(testEnv, { SOCLE_API_URL: "https://socle.test", SOCLE_API_KEY: "k" });
+  // Socle, at the HTTP level: EisenQ's server is the only caller.
+  socle = fakeSocle();
+  vi.stubGlobal("fetch", socle.fetchImpl);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   vi.mocked(auth).mockResolvedValue({ userId: OWNER } as never);
@@ -372,19 +383,71 @@ describe("POST /api/notifications", () => {
   });
 });
 
-describe("preferences", () => {
-  it("fills gaps from the defaults and shows the Clerk email as the address", async () => {
-    const prefs = await json<NotificationPreferences>(await getPrefsRoute());
+describe("preferences: EisenQ's own fields, and the email and bell from Socle", () => {
+  const getPrefs = async (query = "") =>
+    json<NotificationPreferences>(
+      await getPrefsRoute(
+        jsonRequest(`/api/notifications/preferences${query}`, "GET"),
+      ),
+    );
+  const putPrefs = (body: unknown) =>
+    putPrefsRoute(jsonRequest("/api/notifications/preferences", "PUT", body));
+
+  it("fills gaps from the defaults, asks Socle for the two switches, and shows the verified address", async () => {
+    const prefs = await getPrefs();
     expect(prefs).toEqual({
       ...DEFAULT_NOTIFICATION_PREFERENCES,
-      digest: {
-        ...DEFAULT_NOTIFICATION_PREFERENCES.digest,
-        address: OWNER_EMAIL,
-      },
+      // Socle's defaults, for everyone: email off, the bell on.
+      digest: { enabled: false, sendAt: "07:00", address: OWNER_EMAIL },
+      bell: { enabled: true },
     });
+    // Server to server, with the signed-in person's ID in the body only.
+    expect(socle.calls).toHaveLength(1);
+    expect(socle.calls[0]).toMatchObject({
+      url: "https://socle.test/v1/notifications/preferences/lookup",
+      body: { recipientId: OWNER },
+    });
+    expect(socle.calls[0]!.headers.get("authorization")).toBe("Bearer k");
   });
 
-  it("saves what was sent, except the address", async () => {
+  it("shows Socle's state, including an off from an email's link", async () => {
+    socle.setChoices(OWNER, { email: true });
+    expect((await getPrefs()).digest.enabled).toBe(true);
+    socle.setChoices(OWNER, { email: false }, "unsubscribe_link");
+    expect((await getPrefs()).digest.enabled).toBe(false);
+  });
+
+  it("?cached=1 answers from EisenQ's copy, asking neither Socle nor Clerk", async () => {
+    const clerk = fakeClerk();
+    vi.mocked(clerkClient).mockResolvedValue(clerk as never);
+    socle.setChoices(OWNER, { email: true });
+    await getPrefs(); // keeps the copy
+    const before = socle.calls.length;
+    const cached = await getPrefs("?cached=1");
+    expect(cached.digest).toEqual({ enabled: true, sendAt: "07:00" });
+    expect(socle.calls).toHaveLength(before);
+    expect(clerk.users.getUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("says when Socle can't be reached, showing EisenQ's copy", async () => {
+    socle.answerNext("/preferences/lookup", { status: 503 });
+    const prefs = await getPrefs();
+    expect(prefs.channelsUnavailable).toBe(true);
+    expect(prefs.digest.enabled).toBe(false);
+    expect(prefs.bell.enabled).toBe(true);
+  });
+
+  it("marks an unverified address, and never shows it as where email goes", async () => {
+    vi.mocked(clerkClient).mockResolvedValue(
+      fakeClerk({ unverified: [OWNER] }) as never,
+    );
+    const prefs = await getPrefs();
+    expect(prefs.digest.address).toBeUndefined();
+    expect(prefs.digest.addressUnverified).toBe(true);
+  });
+
+  it("saves the changed switches in Socle first, and only those; EisenQ keeps its own fields", async () => {
+    await getPrefs();
     const next: NotificationPreferences = {
       ...DEFAULT_NOTIFICATION_PREFERENCES,
       defaultLead: "1_week",
@@ -393,28 +456,74 @@ describe("preferences", () => {
         sendAt: "06:30",
         address: "someone-else@example.com",
       },
+      bell: { enabled: true },
     };
-    const res = await putPrefsRoute(
-      jsonRequest("/api/notifications/preferences", "PUT", next),
-    );
+    const res = await putPrefs(next);
+    expect(res.status).toBe(200);
     expect(await json(res)).toEqual({
       ...next,
       digest: { enabled: true, sendAt: "06:30", address: OWNER_EMAIL },
     });
+    expect(socle.to("/preferences").map((c) => c.body)).toEqual([
+      { recipientId: OWNER, channels: { email: true } },
+    ]);
+    expect(socle.choicesOf(OWNER).email).toMatchObject({
+      enabled: true,
+      changedVia: "app",
+    });
     const stored = await userSettingsCollection.findOne({ userId: OWNER });
+    // EisenQ's own fields, never the address or Socle's switches.
     expect(stored?.notifications).toEqual({
       events: DEFAULT_NOTIFICATION_PREFERENCES.events,
       defaultLead: "1_week",
-      digest: { enabled: true, sendAt: "06:30" },
+      digest: { sendAt: "06:30" },
+    });
+    expect(stored?.notificationChannels).toMatchObject({
+      email: true,
+      bell: true,
+    });
+
+    // The bell alone, next time.
+    await putPrefs({ ...next, bell: { enabled: false } });
+    expect(socle.to("/preferences").at(-1)?.body).toEqual({
+      recipientId: OWNER,
+      channels: { in_app: false },
     });
   });
 
+  it("leaves Socle alone when neither switch changed", async () => {
+    await getPrefs();
+    const before = socle.calls.length;
+    const res = await putPrefs({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      digest: { enabled: false, sendAt: "08:15" },
+    });
+    expect(res.status).toBe(200);
+    expect(socle.calls).toHaveLength(before);
+    expect(
+      (await userSettingsCollection.findOne({ userId: OWNER }))?.notifications
+        ?.digest,
+    ).toEqual({ sendAt: "08:15" });
+  });
+
+  it("keeps the old values and says so when Socle can't save the email choice", async () => {
+    await getPrefs();
+    socle.answerNext("/preferences", { status: 503 });
+    const res = await putPrefs({
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      digest: { enabled: true, sendAt: "06:30" },
+    });
+    expect(res.status).toBe(503);
+    expect(await json(res)).toEqual({
+      error: "Couldn't save your email choice. Try again.",
+    });
+    const stored = await userSettingsCollection.findOne({ userId: OWNER });
+    expect(stored?.notifications).toBeUndefined();
+    expect(stored?.notificationChannels?.email).toBe(false);
+  });
+
   it("rejects a malformed body with { error }", async () => {
-    const res = await putPrefsRoute(
-      jsonRequest("/api/notifications/preferences", "PUT", {
-        digest: { sendAt: "7am" },
-      }),
-    );
+    const res = await putPrefs({ digest: { sendAt: "7am" } });
     expect(res.status).toBe(400);
     expect(typeof (await json<{ error: unknown }>(res)).error).toBe("string");
   });
