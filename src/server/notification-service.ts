@@ -145,23 +145,30 @@ export async function savePreferences(
   );
 }
 
-/** Keeps EisenQ's copy of what Socle just answered for the person's email and bell. */
+/**
+ * Keeps EisenQ's copy of what Socle just answered for the person's email and
+ * bell. Never for a deleted account (notificationsDeletedAt): a run in flight
+ * while the account is deleted would otherwise write "bell on" back, and the
+ * account would rejoin later runs. Answers false when it's deleted.
+ */
 export async function saveChannelsCopy(
   userId: string,
   channels: { email: boolean; bell: boolean },
   now = new Date(),
-) {
-  await userSettingsCollection.updateOne(
+): Promise<boolean> {
+  const copy = { notificationChannels: { ...channels, checkedAt: now }, updatedAt: now };
+  const kept = await userSettingsCollection.updateOne(
+    { userId, notificationsDeletedAt: { $exists: false } },
+    { $set: copy },
+  );
+  if (kept.matchedCount === 1) return true;
+  // No record yet, or a deleted account's: a new record only if there's none.
+  const made = await userSettingsCollection.updateOne(
     { userId },
-    {
-      $set: {
-        notificationChannels: { ...channels, checkedAt: now },
-        updatedAt: now,
-      },
-      $setOnInsert: { userId, createdAt: now },
-    },
+    { $setOnInsert: { userId, createdAt: now, ...copy } },
     { upsert: true },
   );
+  return made.upsertedCount === 1;
 }
 
 // ------------------------------------------------------------ derivation ----

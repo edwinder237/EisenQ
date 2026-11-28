@@ -212,6 +212,9 @@ export interface UserSettings {
   notificationDigest?: DigestRecord;
   // "Send a test": how many today, in the person's zone (3 a day).
   notificationTests?: { day: string; count: number };
+  // Set when the account was deleted (Clerk's event, or Clerk's 404): its
+  // notification data is gone and nothing may write it back.
+  notificationsDeletedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

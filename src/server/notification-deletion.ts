@@ -22,7 +22,10 @@ import type { SocleClient } from "~/server/socle";
 
 export const MAX_DELETIONS_PER_RUN = 20;
 
-/** EisenQ's own notification data for the person, gone; both switches off for good. */
+/**
+ * EisenQ's own notification data for the person, gone; both switches off for
+ * good, and a tombstone (notificationsDeletedAt) so nothing writes them back.
+ */
 export async function clearNotificationData(userId: string, now: Date) {
   await notificationStatesCollection.deleteMany({ userId });
   await userSettingsCollection.updateOne(
@@ -35,6 +38,7 @@ export async function clearNotificationData(userId: string, now: Date) {
       },
       $set: {
         notificationChannels: { email: false, bell: false, checkedAt: now },
+        notificationsDeletedAt: now,
         updatedAt: now,
       },
     },

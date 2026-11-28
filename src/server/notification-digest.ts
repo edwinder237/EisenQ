@@ -339,7 +339,9 @@ async function sendClaimed(
     return done("unavailable", true);
   }
   const channels = channelsFrom(looked.choices);
-  await saveChannelsCopy(userId, channels, now).catch(() => undefined);
+  const kept = await saveChannelsCopy(userId, channels, now).catch(() => true);
+  // Deleted while this run was on them (Clerk's event): nothing goes.
+  if (!kept) return done("account-deleted", true);
   if (!channels.email && !channels.bell) {
     await settle("opted-out");
     return done("opted-out", true);
@@ -458,6 +460,7 @@ export async function runDigests(
       .find(
         {
           ...(after ? { _id: { $gt: after } } : {}),
+          notificationsDeletedAt: { $exists: false },
           // Email on, or the bell not switched off (no copy: Socle's defaults,
           // so the bell is on).
           $or: [

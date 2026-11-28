@@ -9,7 +9,12 @@ import {
   runDigests,
   sendTestDigest,
 } from "~/server/notification-digest";
-import { applyAction, listNotifications } from "~/server/notification-service";
+import { clearNotificationData } from "~/server/notification-deletion";
+import {
+  applyAction,
+  listNotifications,
+  saveChannelsCopy,
+} from "~/server/notification-service";
 import {
   checklistItemsCollection,
   maintenanceItemsCollection,
@@ -486,6 +491,31 @@ describe("the daily summary, for every account", () => {
     expect(
       await run(new Date("2026-11-28T12:05:00Z"), { elapsed: () => 60_000 }),
     ).toMatchObject({ scanned: 0, capped: true });
+  });
+
+  it("an account deleted while the run is on it isn't written back, sent to, or read again", async () => {
+    await seedSettings(OTHER);
+    await overdueTask(OTHER);
+    await overdueTask(OWNER);
+    const lookup = socle.socle.lookupPreferences.bind(socle.socle);
+    vi.spyOn(socle.socle, "lookupPreferences").mockImplementation(async (id) => {
+      // Clerk's event arrives just as Socle is asked about them.
+      if (id === OTHER) await clearNotificationData(OTHER, AT_SEVEN);
+      return lookup(id);
+    });
+    expect(await run()).toMatchObject({
+      outcomes: { sent: 1, "account-deleted": 1 },
+    });
+    expect(socle.events().map((e) => e.recipient.id)).toEqual([OWNER]);
+    const theirs = await userSettingsCollection.findOne({ userId: OTHER });
+    expect(theirs?.notificationChannels).toMatchObject({ email: false, bell: false });
+    expect(theirs?.notificationsDeletedAt).toEqual(AT_SEVEN);
+    // The copy can't be revived by anyone else either.
+    expect(await saveChannelsCopy(OTHER, { email: false, bell: true })).toBe(false);
+    expect(
+      (await userSettingsCollection.findOne({ userId: OTHER }))?.notificationChannels,
+    ).toMatchObject({ bell: false });
+    expect(await run(new Date("2026-11-28T12:05:00Z"))).toMatchObject({ scanned: 1 });
   });
 
   it("carries on past one person's error: their day stays open for the next run, the others are sent", async () => {
