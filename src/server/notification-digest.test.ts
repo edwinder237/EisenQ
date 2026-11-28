@@ -568,7 +568,7 @@ describe("the daily summary, for every account", () => {
     // And an error before their day is claimed: counted, and the run goes on.
     spy.mockRestore();
     const updateOne = userSettingsCollection.updateOne.bind(userSettingsCollection);
-    vi.spyOn(userSettingsCollection, "updateOne").mockImplementation(
+    const claimSpy = vi.spyOn(userSettingsCollection, "updateOne").mockImplementation(
       (filter, update, options) => {
         if (filter.userId === BAD && "notificationDigest.day" in filter)
           throw new Error("boom");
@@ -579,7 +579,7 @@ describe("the daily summary, for every account", () => {
       status: "done",
       outcomes: { "already-sent": 2, unavailable: 1 },
     });
-    vi.mocked(userSettingsCollection.updateOne).mockRestore();
+    claimSpy.mockRestore();
     expect(await run(new Date("2026-11-27T12:35:00Z"))).toMatchObject({
       outcomes: { "already-sent": 2, sent: 1 },
     });
